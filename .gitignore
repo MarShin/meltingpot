@@ -12,3 +12,8 @@
 # Ignore saved models.
 /examples/results/
 /meltingpot/assets/
+/examples/pettingzoo/results/
+
+# IDE / repo
+.vscode/
+wandb/
