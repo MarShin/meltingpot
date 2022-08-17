@@ -16,6 +16,8 @@ import supersuit as ss
 from examples.pettingzoo import utils
 from meltingpot.python import substrate
 
+import stable_baselines3
+
 
 def parse_args():
     # fmt: off
@@ -130,7 +132,8 @@ if __name__ == "__main__":
         env,
         num_vec_envs=args.num_envs,  # number of parallel multi-agent environments
         num_cpus=0,
-        base_class="gym",
+        # base_class="gym",
+        base_class="stable_baselines3",
     )
     envs.single_observation_space = envs.observation_space
     envs.single_action_space = envs.action_space
@@ -142,13 +145,14 @@ if __name__ == "__main__":
         envs.single_action_space, gym.spaces.Discrete
     ), "only discrete action space is supported"
 
-    observations = env.reset()
+    model = stable_baselines3.PPO("CnnPolicy", envs, verbose=3, n_steps=16)
+    model.learn(total_timesteps=2000000)
 
-    for _ in range(200):
-        action = envs.action_space.sample()
-        print("actions: ")
-        print(action)
-        observation, reward, done, info = envs.step(action)
-        for item in info:
-            if "episodes" in item.keys():
-                print(f"Episodic return {item['episode']['r']}")
+    # for _ in range(200):
+    #     action = envs.action_space.sample()
+    #     print("actions: ")
+    #     print(action)
+    #     observation, reward, done, info = envs.step(action)
+    #     for item in info:
+    #         if "episodes" in item.keys():
+    #             print(f"Episodic return {item['episode']['r']}")
