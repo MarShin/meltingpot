@@ -127,32 +127,48 @@ if __name__ == "__main__":
     )
     env = ss.observation_lambda_v0(env, lambda x, _: x["RGB"], lambda s: s["RGB"])
     env = ss.frame_stack_v1(env, 4)
+    # env = ss.agent_indicator_v0(env, type_only=False) # not added in demo code
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     envs = ss.concat_vec_envs_v1(
         env,
         num_vec_envs=args.num_envs,  # number of parallel multi-agent environments
         num_cpus=0,
-        # base_class="gym",
-        base_class="stable_baselines3",
+        base_class="gym",
     )
     envs.single_observation_space = envs.observation_space
     envs.single_action_space = envs.action_space
     envs.is_vector_env = True
-    envs = gym.wrappers.RecordEpisodeStatistics(envs)
+    # envs = gym.wrappers.RecordEpisodeStatistics(
+    #     envs
+    # )  # info dtype list while wrapper in dict unsupported
     if args.capture_video:
         envs = gym.wrappers.RecordVideo(envs, f"videos/{run_name}")
     assert isinstance(
         envs.single_action_space, gym.spaces.Discrete
     ), "only discrete action space is supported"
 
-    model = stable_baselines3.PPO("CnnPolicy", envs, verbose=3, n_steps=16)
-    model.learn(total_timesteps=2000000)
+    next_obs = torch.Tensor(envs.reset()).to(device)
 
-    # for _ in range(200):
-    #     action = envs.action_space.sample()
-    #     print("actions: ")
-    #     print(action)
-    #     observation, reward, done, info = envs.step(action)
-    #     for item in info:
-    #         if "episodes" in item.keys():
-    #             print(f"Episodic return {item['episode']['r']}")
+    for global_step in range(200):
+
+        actions = np.zeros((16,), dtype=int)
+        # actions = np.zeros((16, 1), dtype=int)
+
+        observation, reward, done, info = envs.step(actions)
+
+        for idx, item in enumerate(info):
+            player_idx = idx % 16
+            if "episode" in item.keys():
+                print(
+                    f"global_step={global_step}, {player_idx}-episodic_return={item['episode']['r']}"
+                )
+                writer.add_scalar(
+                    f"charts/episodic_return-player{player_idx}",
+                    item["episode"]["r"],
+                    global_step,
+                )
+                writer.add_scalar(
+                    f"charts/episodic_length-player{player_idx}",
+                    item["episode"]["l"],
+                    global_step,
+                )
