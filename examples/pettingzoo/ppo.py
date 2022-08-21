@@ -1,4 +1,5 @@
 import argparse
+from operator import ne
 import os
 import random
 import time
@@ -15,8 +16,6 @@ from torch.utils.tensorboard import SummaryWriter
 import supersuit as ss
 from examples.pettingzoo import utils
 from meltingpot.python import substrate
-
-import stable_baselines3
 
 
 def parse_args():
@@ -42,13 +41,13 @@ def parse_args():
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="commons_harvest_open",
         help="the id of the environment")
-    parser.add_argument("--total-timesteps", type=int, default=500000,
+    parser.add_argument("--total-timesteps", type=int, default=500000, # probably 2MM at least
         help="total timesteps of the experiments")
     parser.add_argument("--learning-rate", type=float, default=2.5e-4,
         help="the learning rate of the optimizer")
     parser.add_argument("--num-envs", type=int, default=1,
         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=128, # 1000 in sb3_train
+    parser.add_argument("--num-steps", type=int, default=512, # 1000 rollout_len in sb3_train
         help="the number of steps to run in each environment per policy rollout")
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
         help="Toggle learning rate annealing for policy and value networks")
@@ -78,10 +77,54 @@ def parse_args():
         help="the target KL divergence threshold")
 
     args = parser.parse_args()
-    args.batch_size = int(args.num_envs * args.num_steps)
-    args.minibatch_size = int(args.batch_size // args.num_minibatches)
+    args.batch_size = int(args.num_envs * args.num_steps) # 1 * 128
+    args.minibatch_size = int(args.batch_size // args.num_minibatches) # 128 / 4 = 32
     # fmt: on
     return args
+
+
+def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+    torch.nn.init.orthogonal_(layer.weight, std)
+    torch.nn.init.constant_(layer.bias, bias_const)
+    return layer
+
+
+class Agent(nn.Module):
+    def __init__(self, envs):
+        super().__init__()
+        self.network = nn.Sequential(
+            # 28 = 4*3 + 16 agent indicator
+            layer_init(nn.Conv2d(28, 32, 8, stride=4)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(32, 64, 4, stride=2)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(64, 64, 3, stride=1)),
+            nn.ReLU(),
+            nn.Flatten(),
+            layer_init(nn.Linear(64 * 7 * 7, 512)),
+            nn.ReLU(),
+        )
+        self.actor = layer_init(nn.Linear(512, envs.single_action_space.n), std=0.01)
+        self.critic = layer_init(nn.Linear(512, 1), std=1)
+
+    def get_value(self, x):
+        # x here is obs: (16, 88, 88, 28)
+        x = x.clone()
+        # Convert to tensor, rescale to [0, 1], and convert from
+        # 3 rgb channels * 4 stack frames, rest are agent_indicator
+        x[:, :, :, :12] /= 255.0
+        #   B x H x W x C to B x C x H x W
+        return self.critic(self.network(x.permute(0, 3, 1, 2)))
+
+    def get_action_and_value(self, x, action=None):
+        x = x.clone()
+        x[:, :, :, :12] /= 255.0
+        hidden = self.network(x.permute((0, 3, 1, 2)))
+        logits = self.actor(hidden)
+        probs = Categorical(logits=logits)
+        if action is None:
+            action = probs.sample()
+        return action, probs.log_prob(action), probs.entropy(), self.critic(hidden)
 
 
 if __name__ == "__main__":
@@ -115,19 +158,17 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
-    # env = gym.make(args.env_id)
-    # env = gym.wrappers.RecordEpisodeStatistics(env)
-    # env = gym.wrappers.RecordVideo(env, "videos", record_video_trigger=lambda t:t % 100 ==0)
-
     env_config = substrate.get_config(args.env_id)
-    env = utils.parallel_env(env_config)
     env = utils.parallel_env(
         max_cycles=args.num_steps,
         env_config=env_config,
     )
+    num_agents = env.max_num_agents
     env = ss.observation_lambda_v0(env, lambda x, _: x["RGB"], lambda s: s["RGB"])
     env = ss.frame_stack_v1(env, 4)
-    # env = ss.agent_indicator_v0(env, type_only=False) # not added in demo code
+    env = ss.agent_indicator_v0(
+        env, type_only=False
+    )  # not added in demo code but most likely useful
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     envs = ss.concat_vec_envs_v1(
         env,
@@ -147,28 +188,128 @@ if __name__ == "__main__":
         envs.single_action_space, gym.spaces.Discrete
     ), "only discrete action space is supported"
 
+    agent = Agent(envs).to(device)
+    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    print(agent)
+
+    # ALGO logic: Storage setup
+    # (128, 1, 16, 88, 88, 28)
+    obs = torch.zeros(
+        # (args.num_steps, args.num_envs)
+        (args.num_steps, args.num_envs * num_agents)
+        + envs.single_observation_space.shape
+    ).to(device)
+    # (128, 1, 16, 1)
+    actions = torch.zeros(
+        (args.num_steps, args.num_envs * num_agents) + envs.single_action_space.shape
+    ).to(device)
+    logprobs = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
+    rewards = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
+    dones = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
+    values = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
+
+    # TRY NOT TO MODIFY: start the game
+    global_step = 0
+    start_time = time.time()
     next_obs = torch.Tensor(envs.reset()).to(device)
+    next_done = torch.zeros(args.num_envs).to(device)  # pretty sure larger (16, )?
+    num_updates = args.total_timesteps // args.batch_size
+    print(
+        f"num_updates = total_timesteps / batch_size: {args.total_timesteps} / {args.batch_size} = {num_updates}"
+    )
 
-    for global_step in range(200):
+    print("next_obs shape:", next_obs.shape)
+    print()
+    print("agent.get_action_and_value(next_obs)", agent.get_action_and_value(next_obs))
+    # action (16, 1); log_prob (16, 1); entropy (16, 1); value (16, 1)
 
-        actions = np.zeros((16,), dtype=int)
-        # actions = np.zeros((16, 1), dtype=int)
+    for update in range(1, num_updates + 1):
+        # Annealing the rate if instructed to do so
+        if args.anneal_lr:
+            frac = 1.0 - (update - 1.0) / num_updates
+            lrnow = frac * args.learning_rate
+            optimizer.param_groups[0]["lr"] = lrnow
 
-        observation, reward, done, info = envs.step(actions)
+        for step in range(0, args.num_steps):
+            global_step += 1 * args.num_envs
+            obs[step] = next_obs
+            dones[step] = next_done
 
-        for idx, item in enumerate(info):
-            player_idx = idx % 16
-            if "episode" in item.keys():
-                print(
-                    f"global_step={global_step}, {player_idx}-episodic_return={item['episode']['r']}"
-                )
-                writer.add_scalar(
-                    f"charts/episodic_return-player{player_idx}",
-                    item["episode"]["r"],
-                    global_step,
-                )
-                writer.add_scalar(
-                    f"charts/episodic_length-player{player_idx}",
-                    item["episode"]["l"],
-                    global_step,
-                )
+            # ALGO LOGIC: action logic
+            with torch.no_grad():
+                action, logprob, _, value = agent.get_action_and_value(next_obs)
+                values[step] = value.flatten()
+            actions[step] = action
+            logprobs[step] = logprob
+
+            # TRY NOT TO MODIFY: execute the game and log data
+            next_obs, reward, done, info = envs.step(action.cpu().numpy())
+            rewards[step] = torch.tensor(reward).to(device).view(-1)  # (16, )
+            next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(
+                done
+            ).to(device)
+
+            # Record episodic return for each agent and overall return?
+            # only 'terminal_observation' in info
+            # print("reward: ", reward)
+            # print("done: ", done)
+            # print("info: ")
+            # for idx, item in enumerate(info):
+            #     if item:  # if its not {}
+            #         print(idx, item)
+            # print()
+
+        # bootstrap value if not done - REVISIT CODE
+        with torch.no_grad():
+            next_value = agent.get_value(next_obs).reshape(1, -1)
+            if args.gae:
+                advantages = torch.zeros_like(rewards).to(device)
+                lastgaelam = 0
+                for t in reversed(range(args.num_steps)):
+                    if t == args.num_steps - 1:
+                        nextnonterminal = 1.0 - next_done
+                        nextvalues = next_value
+                    else:
+                        nextnonterminal = 1.0 - dones[t + 1]
+                        nextvalues = values[t + 1]
+                    delta = (
+                        rewards[t]
+                        + args.gamma * nextvalues * nextnonterminal
+                        - values[t]
+                    )
+                    advantages[t] = lastgaelam = (
+                        delta
+                        + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+                    )
+                returns = advantages + values
+            else:
+                returns = torch.zeros_like(rewards).to(device)
+                for t in reversed(range(args.num_steps)):
+                    if t == args.num_steps - 1:
+                        nextnonterminal = 1.0 - next_done
+                        next_return = next_value
+                    else:
+                        nextnonterminal = 1.0 - dones[t + 1]
+                        next_return = returns[t + 1]
+                    returns[t] = rewards[t] + args.gamma * nextnonterminal * next_return
+                advantages = returns - values
+
+        # flatten the batch
+        b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
+        b_logprobs = logprobs.reshape(-1)
+        b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
+        b_advantages = advantages.reshape(-1)
+        b_returns = returns.reshape(-1)
+        b_values = values.reshape(-1)
+
+        # Optimizing the policy and value networks
+        b_inds = np.arange(args.batch_size)
+        clipfracs = []
+        for epoch in range(args.update_epochs):
+            np.random.shuffle(b_inds)
+            for start in range(0, args.batch_size, args.minibatch_size):
+                end = start + args.minibatch_size
+                print("start and end minibatches: ", start, end)
+                mb_inds = b_inds[start:end]
+
+                # _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds]
