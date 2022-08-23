@@ -77,8 +77,8 @@ def parse_args():
         help="the target KL divergence threshold")
 
     args = parser.parse_args()
-    args.batch_size = int(args.num_envs * args.num_steps) # 1 * 128
-    args.minibatch_size = int(args.batch_size // args.num_minibatches) # 128 / 4 = 32
+    args.batch_size = int(args.num_envs * args.num_steps) # 1 * 512
+    args.minibatch_size = int(args.batch_size // args.num_minibatches) # 512 / 4 = 128
     # fmt: on
     return args
 
@@ -193,13 +193,13 @@ if __name__ == "__main__":
     print(agent)
 
     # ALGO logic: Storage setup
-    # (128, 1, 16, 88, 88, 28)
+    # (512, 1, 16, 88, 88, 28)
     obs = torch.zeros(
         # (args.num_steps, args.num_envs)
         (args.num_steps, args.num_envs * num_agents)
         + envs.single_observation_space.shape
     ).to(device)
-    # (128, 1, 16, 1)
+    # (512, 1, 16, 1)
     actions = torch.zeros(
         (args.num_steps, args.num_envs * num_agents) + envs.single_action_space.shape
     ).to(device)
@@ -212,7 +212,7 @@ if __name__ == "__main__":
     global_step = 0
     start_time = time.time()
     next_obs = torch.Tensor(envs.reset()).to(device)
-    next_done = torch.zeros(args.num_envs).to(device)  # pretty sure larger (16, )?
+    next_done = torch.zeros(args.num_envs * num_agents).to(device)
     num_updates = args.total_timesteps // args.batch_size
     print(
         f"num_updates = total_timesteps / batch_size: {args.total_timesteps} / {args.batch_size} = {num_updates}"
@@ -253,10 +253,7 @@ if __name__ == "__main__":
             # only 'terminal_observation' in info
             # print("reward: ", reward)
             # print("done: ", done)
-            # print("info: ")
-            # for idx, item in enumerate(info):
-            #     if item:  # if its not {}
-            #         print(idx, item)
+            # print("info: ", info)
             # print()
 
         # bootstrap value if not done - REVISIT CODE
@@ -309,7 +306,81 @@ if __name__ == "__main__":
             np.random.shuffle(b_inds)
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
-                print("start and end minibatches: ", start, end)
                 mb_inds = b_inds[start:end]
 
-                # _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds]
+                _, newlogprob, entropy, newvalue = agent.get_action_and_value(
+                    b_obs[mb_inds], b_actions.long()[mb_inds]
+                )
+                logratio = newlogprob - b_logprobs[mb_inds]
+                ratio = logratio.exp()
+
+                with torch.no_grad():
+                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
+                    old_approx_kl = (-logratio).mean()
+                    approx_kl = ((ratio - 1) - logratio).mean()
+                    clipfracs += [
+                        ((ratio - 1.0).abs() > args.clip_coef).float().mean().item()
+                    ]
+
+                mb_advantages = b_advantages[mb_inds]
+                if args.norm_adv:
+                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (
+                        mb_advantages.std() + 1e-8
+                    )
+
+                # Policy loss
+                pg_loss1 = -mb_advantages * ratio
+                pg_loss2 = -mb_advantages * torch.clamp(
+                    ratio, 1 - args.clip_coef, 1 + args.clip_coef
+                )
+                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+                # Value loss
+                newvalue = newvalue.view(-1)
+                if args.clip_vloss:
+                    v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
+                    v_clipped = b_values[mb_inds] + torch.clamp(
+                        newvalue - b_values[mb_inds],
+                        -args.clip_coef,
+                        args.clip_coef,
+                    )
+                    v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
+                    v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
+                    v_loss = 0.5 * v_loss_max.mean()
+                else:
+                    v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+                entropy_loss = entropy.mean()
+                loss = pg_loss - args.ent_coef * entropy_loss + args.vf_coef * v_loss
+
+                optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+                optimizer.step()
+
+            # KL divergence early stopping
+            if args.target_kl is not None:
+                if approx_kl > args.target_kl:
+                    break
+
+        y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
+        var_y = np.var(y_true)
+        explained_var = np.nan if var_y == 0 else 1.0 - np.var(y_true - y_pred) / var_y
+
+        # TRY NOT TO MODIFY: record rewards for plotting purposes
+        writer.add_scalar(
+            "charts/learning_rate", optimizer.param_groups[0]["lr"], global_step
+        )
+        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
+        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
+        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
+        writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
+        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
+        writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
+        writer.add_scalar("losses/explained_variance", explained_var, global_step)
+        print("SPS:", int(global_step / (time.time() - start_time)))
+        writer.add_scalar(
+            "charts/SPS", int(global_step / (time.time() - start_time)), global_step
+        )
+
+    env.close()
+    writer.close()
