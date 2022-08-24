@@ -178,6 +178,8 @@ if __name__ == "__main__":
     )
     envs.single_observation_space = envs.observation_space
     envs.single_action_space = envs.action_space
+    envs.is_vector_env = True
+    envs = gym.wrappers.RecordEpisodeStatistics(envs)
 
     if args.capture_video:
         envs = gym.wrappers.RecordVideo(envs, f"videos/{run_name}")
@@ -214,7 +216,6 @@ if __name__ == "__main__":
     print(
         f"num_updates = total_timesteps / batch_size: {args.total_timesteps} / {args.batch_size} = {num_updates}"
     )
-
     print("next_obs shape:", next_obs.shape)
     print()
     print("agent.get_action_and_value(next_obs)", agent.get_action_and_value(next_obs))
@@ -252,6 +253,23 @@ if __name__ == "__main__":
             # print("done: ", done)
             # print("info: ", info)
             # print()
+
+            for idx, item in enumerate(info):
+                player_idx = idx % num_agents
+                if "episode" in item.keys():
+                    print(
+                        f"global_step={global_step}, {player_idx}-episodic_return={item['episode']['r']}"
+                    )
+                    writer.add_scalar(
+                        f"charts/episodic_return-player{player_idx}",
+                        item["episode"]["r"],
+                        global_step,
+                    )
+                    writer.add_scalar(
+                        f"charts/episodic_length-player{player_idx}",
+                        item["episode"]["l"],
+                        global_step,
+                    )
 
         # bootstrap value if not done - REVISIT CODE
         with torch.no_grad():
