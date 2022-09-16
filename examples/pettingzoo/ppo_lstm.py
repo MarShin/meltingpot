@@ -148,14 +148,6 @@ class Agent(nn.Module):
         return self.critic(hidden)
 
     def get_action_and_value(self, x, lstm_state, done, action=None):
-        # x = x.clone()
-        # x[:, :, :, :12] /= 255.0
-        # hidden = self.network(x.permute((0, 3, 1, 2)))
-        # logits = self.actor(hidden)
-        # probs = Categorical(logits=logits)
-        # if action is None:
-        #     action = probs.sample()
-        # return action, probs.log_prob(action), probs.entropy(), self.critic(hidden)
         hidden, lstm_state = self.get_states(x, lstm_state, done)
         logits = self.actor(hidden)
         probs = Categorical(logits=logits)
