@@ -244,11 +244,11 @@ if __name__ == "__main__":
     # dones = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
     # values = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
 
-    # (512, 32, 88, 88, 28)
+    # (512, 16, 88, 88, 28)
     obs = torch.zeros(
         (args.num_steps, args.num_envs) + envs.single_observation_space.shape
     ).to(device)
-    # (512, 32, 1)
+    # (512, 16, 1)
     actions = torch.zeros(
         (args.num_steps, args.num_envs) + envs.single_action_space.shape
     ).to(device)
@@ -314,6 +314,7 @@ if __name__ == "__main__":
                 done
             ).to(device)
 
+            # per agent info
             for idx, item in enumerate(info):
                 player_idx = idx % num_agents
                 if "episode" in item.keys():
@@ -330,6 +331,8 @@ if __name__ == "__main__":
                         item["episode"]["l"],
                         global_step,
                     )
+                
+            # episode-wide info
 
         # bootstrap value if not done - REVISIT CODE
         with torch.no_grad():
