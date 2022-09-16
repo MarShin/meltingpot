@@ -41,11 +41,11 @@ def parse_args():
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="commons_harvest_open",
         help="the id of the environment")
-    parser.add_argument("--total-timesteps", type=int, default=500000, # probably 2MM at least
+    parser.add_argument("--total-timesteps", type=int, default=10000000, # probably 2MM at least
         help="total timesteps of the experiments")
     parser.add_argument("--learning-rate", type=float, default=2.5e-4,
         help="the learning rate of the optimizer")
-    parser.add_argument("--num-envs", type=int, default=1,
+    parser.add_argument("--num-envs", type=int, default=16,
         help="the number of parallel game environments")
     parser.add_argument("--num-steps", type=int, default=512, # 1000 rollout_len in sb3_train
         help="the number of steps to run in each environment per policy rollout")
@@ -57,7 +57,7 @@ def parse_args():
         help="the discount factor gamma")
     parser.add_argument("--gae-lambda", type=float, default=0.95,
         help="the lambda for the general advantage estimation")
-    parser.add_argument("--num-minibatches", type=int, default=1, # was 4
+    parser.add_argument("--num-minibatches", type=int, default=4,
         help="the number of mini-batches")
     parser.add_argument("--update-epochs", type=int, default=4,
         help="the K epochs to update the policy")
@@ -77,8 +77,9 @@ def parse_args():
         help="the target KL divergence threshold")
 
     args = parser.parse_args()
-    args.batch_size = int(args.num_envs * args.num_steps) # 1 * 512
-    args.minibatch_size = int(args.batch_size // args.num_minibatches) # 512 / 1 = 512
+    args.batch_size = int(args.num_envs * args.num_steps) # 1 * 512; 
+    # not relevant for LSTM training
+    # args.minibatch_size = int(args.batch_size // args.num_minibatches) # 512 / 1 = 512
     # fmt: on
     return args
 
@@ -207,8 +208,8 @@ if __name__ == "__main__":
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     envs = ss.concat_vec_envs_v1(
         env,
-        num_vec_envs=args.num_envs,  # number of parallel multi-agent environments
-        # TODO: num_vec_envs=args.num_envs // num_agents, right now only using this interface but not leveraging vec env, if vec env can do so its 1 env per agent
+        # num_vec_envs=args.num_envs,  # number of parallel multi-agent environments
+        num_vec_envs=args.num_envs // num_agents,
         num_cpus=0,
         base_class="gym",
     )
@@ -228,27 +229,42 @@ if __name__ == "__main__":
     print(agent)
 
     # ALGO logic: Storage setup
-    # (512, 1, 16, 88, 88, 28)
+    # (512, 1*16, 88, 88, 28)
     # here args.num_envs * num_agents = 1*16
+    # obs = torch.zeros(
+    #     (args.num_steps, args.num_envs * num_agents)
+    #     + envs.single_observation_space.shape
+    # ).to(device)
+    # # (512, 1*16, 1)
+    # actions = torch.zeros(
+    #     (args.num_steps, args.num_envs * num_agents) + envs.single_action_space.shape
+    # ).to(device)
+    # logprobs = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
+    # rewards = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
+    # dones = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
+    # values = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
+
+    # (512, 32, 88, 88, 28)
     obs = torch.zeros(
-        # (args.num_steps, args.num_envs)
-        (args.num_steps, args.num_envs * num_agents)
-        + envs.single_observation_space.shape
+        (args.num_steps, args.num_envs) + envs.single_observation_space.shape
     ).to(device)
-    # (512, 1, 16, 1)
+    # (512, 32, 1)
     actions = torch.zeros(
-        (args.num_steps, args.num_envs * num_agents) + envs.single_action_space.shape
+        (args.num_steps, args.num_envs) + envs.single_action_space.shape
     ).to(device)
-    logprobs = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
-    rewards = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
-    dones = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
-    values = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
+    logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    values = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
     next_obs = torch.Tensor(envs.reset()).to(device)
-    next_done = torch.zeros(args.num_envs * num_agents).to(device)
+
+    # next_done = torch.zeros(args.num_envs * num_agents).to(device)
+    next_done = torch.zeros(args.num_envs).to(device)
+
     # lstm hidden state & cell state
     next_lstm_state = (
         torch.zeros(agent.lstm.num_layers, args.num_envs, agent.lstm.hidden_size).to(
