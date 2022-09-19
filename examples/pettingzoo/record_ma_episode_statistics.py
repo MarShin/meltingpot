@@ -9,54 +9,86 @@ import gym
 class RecordMultiagentEpisodeStatistics(gym.Wrapper):
     """
     4 metric according to 'A multi-agent reinforcement learning model of common-pool resource appropriation' paper
-    Unitarian (U) aka Efficiency  - sum total of all rewards obtained by all agents
+    Unitarian (U) aka Efficiency - sum total of all rewards obtained by all agents
     Equality (E) - using Gini coefficient
     Sustainability (S) - average time at which the rewards are collected
     Peace (P) - average number of untagged agent steps
     """
 
-    def __init__(self, env, deque_size=100):
+    def __init__(self, env, num_steps, deque_size=100):
         super().__init__(env)
         self.num_envs = getattr(env, "num_envs", 1)
         self.t0 = time.perf_counter()
-        self.episode_count = 0
-        self.episode_efficiency = None
+        # self.episode_count = 0
+        self.episode_returns = None
         self.episode_lengths = None
+        self.episode_efficiency = None
+        self.episode_equality = None
+        self.episode_sustainability = None
+        self.episode_peace = None
         self.return_queue = deque(maxlen=deque_size)
         self.length_queue = deque(maxlen=deque_size)
+        self.efficiency_queue = deque(maxlen=deque_size)
+        self.equality_queue = deque(maxlen=deque_size)
+        self.sustainability_queue = deque(maxlen=deque_size)
+        self.peace_queue = deque(maxlen=deque_size)
         self.is_vector_env = getattr(env, "is_vector_env", False)
+        self.num_steps = num_steps
 
     def reset(self, **kwargs):
         observations = super().reset(**kwargs)
-        self.episode_efficiency = np.zeros(self.num_envs, dtype=np.float32)
+        self.episode_returns = np.zeros(self.num_envs, dtype=np.float32)
+        self.episode_returns_raw = np.zeros((self.num_envs), dtype=np.float32)
         self.episode_lengths = np.zeros(self.num_envs, dtype=np.int32)
+        self.episode_efficiency = 0.0
+        self.episode_equality = 0.0
+        self.episode_sustainability = 0.0
+        self.episode_peace = 0.0
+        self.sustainability_t_i = 0
         return observations
 
+    def __gini_coefficient(self, x):
+        """Compute Gini coefficient of array of values"""
+        diffsum = 0
+        for i, xi in enumerate(x[:-1], 1):
+            diffsum += np.sum(np.abs(xi - x[i:]))
+        return diffsum / (len(x) ** 2 * np.mean(x))
+
+    # can return 1 episode info dict aggregating all the metrics of each agent
     def step(self, action):
         observations, rewards, dones, infos = super().step(action)
-        self.episode_efficiency += rewards
+        self.episode_returns += rewards
+        self.sustainability_t_i += (rewards>0.0).sum()
         self.episode_lengths += 1
-        if not self.is_vector_env:
-            infos = [infos]
-            dones = [dones]
-        else:
-            infos = list(infos)  # Convert infos to mutable type
-        for i in range(len(dones)):
-            if dones[i]:
+        assert (
+            self.is_vector_env == True
+        ), "this wrapper currently only works with vector env"
+
+        infos = list(infos)  # Convert infos to mutable type
+        # aggregating each agent
+
+        if dones.all():  # if all agent have finished the episode
+            for i in range(len(dones)):
                 infos[i] = infos[i].copy()
-                episode_return = self.episode_efficiency[i]
-                episode_length = self.episode_lengths[i]
+
+                self.episode_efficiency = (
+                    self.episode_returns.sum() / self.episode_lengths.max()
+                )
+                self.episode_equality = 1 - self.__gini_coefficient(
+                    self.episode_returns
+                )
+
+                self.episode_sustainability = self.sustainability_t_i / len(dones)
+
                 episode_info = {
-                    "r": episode_return,
-                    "l": episode_length,
+                    "l": self.episode_lengths.max(),
+                    "u": self.episode_efficiency,
+                    "e": self.episode_equality,
+                    "s": self.episode_sustainability,
                     "t": round(time.perf_counter() - self.t0, 6),
                 }
-                infos[i]["episode"] = episode_info
-                self.return_queue.append(episode_return)
-                self.length_queue.append(episode_length)
-                self.episode_count += 1
-                self.episode_efficiency[i] = 0
-                self.episode_lengths[i] = 0
+                infos[i]["ma_episode"] = episode_info
+                self.efficiency_queue.append(self.episode_efficiency)
         if self.is_vector_env:
             infos = tuple(infos)
         return (
