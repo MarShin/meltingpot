@@ -19,6 +19,7 @@ from meltingpot.python import substrate
 from examples.pettingzoo.record_ma_episode_statistics import (
     RecordMultiagentEpisodeStatistics,
 )
+from meltingpot.python.utils.scenarios.wrappers import all_observations_wrapper
 
 
 def parse_args():
@@ -202,6 +203,14 @@ if __name__ == "__main__":
         max_cycles=args.num_steps,
         env_config=env_config,
     )
+
+    # TODO: not sure where exactly to wrap
+    # wrapped = all_observations_wrapper.Wrapper(
+    #     env,
+    #     observations_to_share=[OBSERVATION_1],
+    #     share_actions=True,
+    #     share_rewards=True)
+
     num_agents = env.max_num_agents
     env = ss.observation_lambda_v0(env, lambda x, _: x["RGB"], lambda s: s["RGB"])
     env = ss.frame_stack_v1(env, 1)  # stack 1 frame instead of 4 as we're using LSTM

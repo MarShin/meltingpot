@@ -10,9 +10,8 @@
 /lab2d/
 
 # Ignore saved models.
-/examples/results/
+results/
 /meltingpot/assets/
-/examples/pettingzoo/results/
 
 # IDE / repo
 # .vscode/

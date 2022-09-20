@@ -47,7 +47,7 @@ class RecordMultiagentEpisodeStatistics(gym.Wrapper):
         self.sustainability_t_i = 0
         return observations
 
-    def __gini_coefficient(self, x):
+    def _gini_coefficient(self, x):
         """Compute Gini coefficient of array of values"""
         diffsum = 0
         for i, xi in enumerate(x[:-1], 1):
@@ -58,7 +58,7 @@ class RecordMultiagentEpisodeStatistics(gym.Wrapper):
     def step(self, action):
         observations, rewards, dones, infos = super().step(action)
         self.episode_returns += rewards
-        self.sustainability_t_i += (rewards>0.0).sum()
+        self.sustainability_t_i += (rewards > 0.0).sum()
         self.episode_lengths += 1
         assert (
             self.is_vector_env == True
@@ -67,14 +67,16 @@ class RecordMultiagentEpisodeStatistics(gym.Wrapper):
         infos = list(infos)  # Convert infos to mutable type
         # aggregating each agent
 
-        if dones.all():  # if all agent have finished the episode
+        if (
+            dones.all()
+        ):  # if all agent have finished the episode then report the metrics
             for i in range(len(dones)):
                 infos[i] = infos[i].copy()
 
                 self.episode_efficiency = (
                     self.episode_returns.sum() / self.episode_lengths.max()
                 )
-                self.episode_equality = 1 - self.__gini_coefficient(
+                self.episode_equality = 1 - self._gini_coefficient(
                     self.episode_returns
                 )
 
