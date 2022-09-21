@@ -8,6 +8,7 @@ import gym
 
 class RecordMultiagentEpisodeStatistics(gym.Wrapper):
     """
+    Adapted from gym wrapper `RecordEpisodeStatistics`
     4 metric according to 'A multi-agent reinforcement learning model of common-pool resource appropriation' paper
     Unitarian (U) aka Efficiency - sum total of all rewards obtained by all agents
     Equality (E) - using Gini coefficient
