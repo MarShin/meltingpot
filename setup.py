@@ -76,7 +76,7 @@ setuptools.setup(
         # Dependencies required for pettingzoo example.
         "pettingzoo": [
             "dm-tree",
-            "gym==0.23.1",
+            "gym", # ==0.23.1
             "matplotlib",
             "pettingzoo>=1.18.0",
             "stable-baselines3",
