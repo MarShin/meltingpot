@@ -19,7 +19,6 @@ from meltingpot.python import substrate
 from examples.pettingzoo.record_ma_episode_statistics import (
     RecordMultiagentEpisodeStatistics,
 )
-from meltingpot.python.utils.scenarios.wrappers import all_observations_wrapper
 
 
 def parse_args():
@@ -43,7 +42,7 @@ def parse_args():
         help="weather to capture videos of the agent performances (check out `videos` folder)")
 
     # Algorithm specific arguments
-    parser.add_argument("--env-id", type=str, default="commons_harvest_open",
+    parser.add_argument("--env-id", type=str, default="allelopathic_harvest", # commons_harvest_open, allelopathic_harvest
         help="the id of the environment")
     parser.add_argument("--total-timesteps", type=int, default=10000000, # probably 2MM at least
         help="total timesteps of the experiments")
@@ -51,7 +50,7 @@ def parse_args():
         help="the learning rate of the optimizer")
     parser.add_argument("--num-envs", type=int, default=16,
         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=512, # 1000 rollout_len in sb3_train
+    parser.add_argument("--num-steps", type=int, default=64, # TODO: change back to 512 standard, 1000 rollout_len in sb3_train
         help="the number of steps to run in each environment per policy rollout")
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
         help="Toggle learning rate annealing for policy and value networks")
@@ -98,7 +97,7 @@ class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
         self.network = nn.Sequential(
-            # if intput is Linear layer: np.array(envs.single_observation_space.shape).prod()
+            # if intput is Linear layer: np.array(envs.single_observation_space_shape).prod()
             # 19 = 1 frames * 3 RGB channels + 16 agent indicator
             layer_init(nn.Conv2d(19, 32, 8, stride=4)),
             nn.ReLU(),
@@ -204,19 +203,38 @@ if __name__ == "__main__":
         env_config=env_config,
     )
 
-    # TODO: not sure where exactly to wrap
-    # wrapped = all_observations_wrapper.Wrapper(
-    #     env,
-    #     observations_to_share=[OBSERVATION_1],
-    #     share_actions=True,
-    #     share_rewards=True)
+    def observation_fn(obs, obs_space):
+        # print("## observation_fn## ")
+        # print(obs)
+        # print()
+        # TODO: sanction-observation function - ways to aggregate the WORLD obs
+        # B = J * C * Z WHERE J is  sanction opportunity, C is context aka last obs, Z is action 'WHO_ZAPPED_WHO'
+
+        # return obs["RGB"]
+        return obs[
+            "RGB",
+            # "WORLD.PLAYER_TIMEOUT_COUNT",
+            "WORLD.WHO_ZAPPED_WHO",
+        ]
+
+    def observation_space_fn(obs_space):
+        # print("observation_space_fn")
+        # print(obs_space)
+        # return obs_space["RGB"]
+
+        spaces = {
+            "RGB": obs_space["RGB"],
+            "WORLD.WHO_ZAPPED_WHO": obs_space["WORLD.WHO_ZAPPED_WHO"],
+        }
+        return gym.spaces.Dict(spaces)
 
     num_agents = env.max_num_agents
-    env = ss.observation_lambda_v0(env, lambda x, _: x["RGB"], lambda s: s["RGB"])
-    env = ss.frame_stack_v1(env, 1)  # stack 1 frame instead of 4 as we're using LSTM
-    env = ss.agent_indicator_v0(
-        env, type_only=False
-    )  # not added in demo code but most likely useful
+    # env = ss.observation_lambda_v0(env, lambda x, _: x["RGB"], lambda s: s["RGB"])
+    env = ss.observation_lambda_v0(
+        env, lambda a, b: observation_fn(a, b), lambda a: observation_space_fn(a)
+    )
+    # env = ss.frame_stack_v1(env, 1)  # stack 1 frame instead of 4 as we're using LSTM
+    # env = ss.agent_indicator_v0(env, type_only=False)
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     envs = ss.concat_vec_envs_v1(
         env,
@@ -226,6 +244,13 @@ if __name__ == "__main__":
         base_class="gym",
     )
     envs.single_observation_space = envs.observation_space
+    # shape immutable - need to provide in another way
+    if isinstance(envs.observation_space, (gym.spaces.Dict)):
+        shape = ()
+        for k, v in envs.observation_space.items():
+            shape += v.shape
+        envs.single_observation_space_shape = shape
+
     envs.single_action_space = envs.action_space
     envs.is_vector_env = True
     envs = gym.wrappers.RecordEpisodeStatistics(envs)
@@ -242,24 +267,9 @@ if __name__ == "__main__":
     print(agent)
 
     # ALGO logic: Storage setup
-    # (512, 1*16, 88, 88, 28)
-    # here args.num_envs * num_agents = 1*16
-    # obs = torch.zeros(
-    #     (args.num_steps, args.num_envs * num_agents)
-    #     + envs.single_observation_space.shape
-    # ).to(device)
-    # # (512, 1*16, 1)
-    # actions = torch.zeros(
-    #     (args.num_steps, args.num_envs * num_agents) + envs.single_action_space.shape
-    # ).to(device)
-    # logprobs = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
-    # rewards = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
-    # dones = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
-    # values = torch.zeros((args.num_steps, args.num_envs * num_agents)).to(device)
-
     # (512, 16, 88, 88, 28)
     obs = torch.zeros(
-        (args.num_steps, args.num_envs) + envs.single_observation_space.shape
+        (args.num_steps, args.num_envs) + envs.single_observation_space_shape
     ).to(device)
     # (512, 16, 1)
     actions = torch.zeros(
@@ -274,8 +284,6 @@ if __name__ == "__main__":
     global_step = 0
     start_time = time.time()
     next_obs = torch.Tensor(envs.reset()).to(device)
-
-    # next_done = torch.zeros(args.num_envs * num_agents).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
     # lstm hidden state & cell state
@@ -345,7 +353,7 @@ if __name__ == "__main__":
                         global_step,
                     )
 
-            # episode-wide info - each tuple in list contains same info
+            # episode-wide info - overhead, each tuple in list contains same info
             if "ma_episode" in info[0].keys():
                 print(
                     f"global_step={global_step}, multiagent-max_length={info[0]['ma_episode']['l']}"
@@ -420,7 +428,7 @@ if __name__ == "__main__":
                 advantages = returns - values
 
         # flatten the batch
-        b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
+        b_obs = obs.reshape((-1,) + envs.single_observation_space_shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
         b_dones = dones.reshape(-1)

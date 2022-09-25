@@ -193,13 +193,13 @@ if __name__ == "__main__":
     print(agent)
 
     # ALGO logic: Storage setup
-    # (512, 1, 16, 88, 88, 28)
+    # (512, 1*16, 88, 88, 28)
     obs = torch.zeros(
         # (args.num_steps, args.num_envs)
         (args.num_steps, args.num_envs * num_agents)
         + envs.single_observation_space.shape
     ).to(device)
-    # (512, 1, 16, 1)
+    # (512, 1*16, 1)
     actions = torch.zeros(
         (args.num_steps, args.num_envs * num_agents) + envs.single_action_space.shape
     ).to(device)

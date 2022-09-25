@@ -68,18 +68,15 @@ class RecordMultiagentEpisodeStatistics(gym.Wrapper):
         infos = list(infos)  # Convert infos to mutable type
         # aggregating each agent
 
-        if (
-            dones.all()
-        ):  # if all agent have finished the episode then report the metrics
+        # if all agent have finished the episode then report the metrics
+        if dones.all():
             for i in range(len(dones)):
                 infos[i] = infos[i].copy()
 
                 self.episode_efficiency = (
                     self.episode_returns.sum() / self.episode_lengths.max()
                 )
-                self.episode_equality = 1 - self._gini_coefficient(
-                    self.episode_returns
-                )
+                self.episode_equality = 1 - self._gini_coefficient(self.episode_returns)
 
                 self.episode_sustainability = self.sustainability_t_i / len(dones)
 
