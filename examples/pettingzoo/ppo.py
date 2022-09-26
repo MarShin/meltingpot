@@ -16,6 +16,9 @@ from torch.utils.tensorboard import SummaryWriter
 import supersuit as ss
 from examples.pettingzoo import utils
 from meltingpot.python import substrate
+from examples.pettingzoo.record_ma_episode_statistics import (
+    RecordMultiagentEpisodeStatistics,
+)
 
 
 def parse_args():
@@ -181,6 +184,7 @@ if __name__ == "__main__":
     envs.single_action_space = envs.action_space
     envs.is_vector_env = True
     envs = gym.wrappers.RecordEpisodeStatistics(envs)
+    envs = RecordMultiagentEpisodeStatistics(envs, args.num_steps)
 
     if args.capture_video:
         envs = gym.wrappers.RecordVideo(envs, f"videos/{run_name}")
@@ -269,6 +273,41 @@ if __name__ == "__main__":
                         item["episode"]["l"],
                         global_step,
                     )
+
+            # episode-wide info - overhead, each tuple in list contains same info
+            if "ma_episode" in info[0].keys():
+                print(
+                    f"global_step={global_step}, multiagent-max_length={info[0]['ma_episode']['l']}"
+                )
+                print(
+                    f"global_step={global_step}, multiagent-episodic_efficiency={info[0]['ma_episode']['u']}"
+                )
+                print(
+                    f"global_step={global_step}, multiagent-episodic_equality={info[0]['ma_episode']['e']}"
+                )
+                print(
+                    f"global_step={global_step}, multiagent-episodic_sustainability={info[0]['ma_episode']['s']}"
+                )
+                writer.add_scalar(
+                    f"charts/episodic_max_length",
+                    info[0]["ma_episode"]["l"],
+                    global_step,
+                )
+                writer.add_scalar(
+                    f"charts/episodic_efficiency",
+                    info[0]["ma_episode"]["u"],
+                    global_step,
+                )
+                writer.add_scalar(
+                    f"charts/episodic_equality",
+                    info[0]["ma_episode"]["e"],
+                    global_step,
+                )
+                writer.add_scalar(
+                    f"charts/episodic_sustainability",
+                    info[0]["ma_episode"]["s"],
+                    global_step,
+                )
 
         # bootstrap value if not done - REVISIT CODE
         with torch.no_grad():

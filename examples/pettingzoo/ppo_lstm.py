@@ -44,7 +44,7 @@ def parse_args():
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="allelopathic_harvest", # commons_harvest_open, allelopathic_harvest
         help="the id of the environment")
-    parser.add_argument("--total-timesteps", type=int, default=10000000, # probably 2MM at least
+    parser.add_argument("--total-timesteps", type=int, default=5000000, # probably 2MM at least
         help="total timesteps of the experiments")
     parser.add_argument("--learning-rate", type=float, default=2.5e-4,
         help="the learning rate of the optimizer")
