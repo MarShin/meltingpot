@@ -211,7 +211,9 @@ if __name__ == "__main__":
         # B = J * C * Z WHERE J is  sanction opportunity, C is context aka last obs, Z is action 'WHO_ZAPPED_WHO'
 
         # return obs["RGB"]
-        return np.concatenate((obs["RGB"], obs["WORLD.WHO_ZAPPED_WHO"]))
+        return np.concatenate(
+            (obs["RGB"], torch.unsqueeze(obs["WORLD.WHO_ZAPPED_WHO"], 0))
+        )
 
     def observation_space_fn(obs_space):
         # print("observation_space_fn")
@@ -250,6 +252,8 @@ if __name__ == "__main__":
     envs.single_action_space = envs.action_space
     envs.is_vector_env = True
     envs = gym.wrappers.RecordEpisodeStatistics(envs)
+
+    # TODO: have MA stats triggered like Record Video
     envs = RecordMultiagentEpisodeStatistics(envs, args.num_steps)
 
     if args.capture_video:
