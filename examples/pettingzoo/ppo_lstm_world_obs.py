@@ -210,10 +210,14 @@ if __name__ == "__main__":
         # TODO: sanction-observation function - ways to aggregate the WORLD obs
         # B = J * C * Z WHERE J is  sanction opportunity, C is context aka last obs, Z is action 'WHO_ZAPPED_WHO'
 
-        # return obs["RGB"]
-        return np.concatenate(
-            (obs["RGB"], torch.unsqueeze(obs["WORLD.WHO_ZAPPED_WHO"], 0))
-        )
+        # return gym.Space.Dict(
+        #     (obs["RGB"], np.expand_dims(obs["WORLD.WHO_ZAPPED_WHO"], 0))
+        # )
+        spaces = {
+            "RGB": obs["RGB"],
+            "WORLD.WHO_ZAPPED_WHO": obs["WORLD.WHO_ZAPPED_WHO"],
+        }
+        return gym.spaces.Dict(spaces)
 
     def observation_space_fn(obs_space):
         # print("observation_space_fn")
@@ -267,11 +271,11 @@ if __name__ == "__main__":
     print(agent)
 
     # ALGO logic: Storage setup
-    # (512, 16, 88, 88, 28)
+    # (512, 16, 88, 88, 19)
     obs = torch.zeros(
         (args.num_steps, args.num_envs) + envs.single_observation_space_shape
     ).to(device)
-    # (512, 16, 1)
+    # (512, 16)
     actions = torch.zeros(
         (args.num_steps, args.num_envs) + envs.single_action_space.shape
     ).to(device)

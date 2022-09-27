@@ -233,11 +233,11 @@ if __name__ == "__main__":
     print(agent)
 
     # ALGO logic: Storage setup
-    # (512, 16, 88, 88, 28)
+    # (512, 16, 88, 88, 19)
     obs = torch.zeros(
         (args.num_steps, args.num_envs) + envs.single_observation_space_shape
     ).to(device)
-    # (512, 16, 1)
+    # (512, 16)
     actions = torch.zeros(
         (args.num_steps, args.num_envs) + envs.single_action_space.shape
     ).to(device)
@@ -267,9 +267,6 @@ if __name__ == "__main__":
         f"num_updates = total_timesteps / batch_size: {args.total_timesteps} / {args.batch_size} = {num_updates}"
     )
     print("next_obs shape:", next_obs.shape)
-    # print()
-    # print("agent.get_action_and_value(next_obs)", agent.get_action_and_value(next_obs))
-    # action (16, 1); log_prob (16, 1); entropy (16, 1); value (16, 1)
 
     for update in range(1, num_updates + 1):
         initial_lstm_state = (next_lstm_state[0].clone(), next_lstm_state[1].clone())
