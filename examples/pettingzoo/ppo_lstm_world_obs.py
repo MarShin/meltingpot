@@ -204,18 +204,18 @@ if __name__ == "__main__":
         env_config=env_config,
     )
     num_agents = env.max_num_agents
-    world_obs = torch.zeros((num_agents, num_agents)).to(device)
+    who_zap_who = None
 
     def observation_fn(obs):
         # TODO: sanction-observation function - ways to aggregate the WORLD obs
         # B = J * C * Z WHERE J is  sanction opportunity - `AVATAR_IDS_IN_RANGE_TO_ZAP`, C is context a.k.a last obs, Z is disapproval event 'WHO_ZAPPED_WHO'
-        global world_obs
+        global who_zap_who
         observations = {
             "RGB": obs["RGB"],
             "WORLD.WHO_ZAPPED_WHO": obs["WORLD.WHO_ZAPPED_WHO"],
         }
-        world_obs = obs["WORLD.WHO_ZAPPED_WHO"]
-        print("world_obs sum", world_obs.sum())
+
+        who_zap_who = obs["WORLD.WHO_ZAPPED_WHO"]
         return observations
 
     def observation_space_fn(obs_space):
@@ -257,7 +257,7 @@ if __name__ == "__main__":
     envs = gym.wrappers.RecordEpisodeStatistics(envs)
 
     # TODO: have MA stats triggered like Record Video - only at a schedule
-    envs = RecordMultiagentEpisodeStatistics(envs, args.num_steps, world_obs)
+    envs = RecordMultiagentEpisodeStatistics(envs, args.num_steps)
 
     if args.capture_video:
         envs = gym.wrappers.RecordVideo(envs, f"videos/{run_name}")
@@ -282,6 +282,7 @@ if __name__ == "__main__":
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    world_zaps = torch.zeros((args.num_steps, num_agents, num_agents)).to(device)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -327,6 +328,7 @@ if __name__ == "__main__":
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
+            world_zaps[step] = who_zap_who
 
             # TRY NOT TO MODIFY: execute the game and log data
             # next_obs, reward, done, info = envs.step(action.cpu().numpy())
@@ -352,9 +354,6 @@ if __name__ == "__main__":
                 ]
             )
             next_obs, reward, done, info = envs.step(fireZap)
-
-            print("### WORLD OBS ### ")
-            print("sum of zaps: ", world_obs.sum())
 
             rewards[step] = torch.tensor(reward).to(device).view(-1)  # (16, )
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(
@@ -393,6 +392,9 @@ if __name__ == "__main__":
                 print(
                     f"global_step={global_step}, multiagent-episodic_sustainability={info[0]['ma_episode']['s']}"
                 )
+                print(
+                    f"global_step={global_step}, multiagent-episodic_peace={info[0]['ma_episode']['p']}"
+                )
                 writer.add_scalar(
                     f"charts/episodic_max_length",
                     info[0]["ma_episode"]["l"],
@@ -411,6 +413,11 @@ if __name__ == "__main__":
                 writer.add_scalar(
                     f"charts/episodic_sustainability",
                     info[0]["ma_episode"]["s"],
+                    global_step,
+                )
+                writer.add_scalar(
+                    f"charts/episodic_peace",
+                    info[0]["ma_episode"]["p"],
                     global_step,
                 )
 

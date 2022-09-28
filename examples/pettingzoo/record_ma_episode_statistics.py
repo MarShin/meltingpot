@@ -16,9 +16,10 @@ class RecordMultiagentEpisodeStatistics(gym.Wrapper):
     Peace (P) - average number of untagged agent steps
     """
 
-    def __init__(self, env, num_steps, world_obs, deque_size=100):
+    def __init__(self, env, num_steps, deque_size=100):
         super().__init__(env)
         self.num_envs = getattr(env, "num_envs", 1)
+        self.num_agents = getattr(env, "max_num_agents", 1)
         self.t0 = time.perf_counter()
         # self.episode_count = 0
         self.episode_returns = None
@@ -29,13 +30,10 @@ class RecordMultiagentEpisodeStatistics(gym.Wrapper):
         self.episode_peace = None
         self.return_queue = deque(maxlen=deque_size)
         self.length_queue = deque(maxlen=deque_size)
-        self.efficiency_queue = deque(maxlen=deque_size)
-        self.equality_queue = deque(maxlen=deque_size)
-        self.sustainability_queue = deque(maxlen=deque_size)
-        self.peace_queue = deque(maxlen=deque_size)
+
         self.is_vector_env = getattr(env, "is_vector_env", False)
         self.num_steps = num_steps
-        self.world_obs = world_obs
+        self.zap_counts = None
 
     def reset(self, **kwargs):
         observations = super().reset(**kwargs)
@@ -47,6 +45,7 @@ class RecordMultiagentEpisodeStatistics(gym.Wrapper):
         self.episode_sustainability = 0.0
         self.episode_peace = 0.0
         self.sustainability_t_i = 0
+        self.zap_counts = 0
         return observations
 
     def _gini_coefficient(self, x):
@@ -62,6 +61,9 @@ class RecordMultiagentEpisodeStatistics(gym.Wrapper):
         self.episode_returns += rewards
         self.sustainability_t_i += (rewards > 0.0).sum()
         self.episode_lengths += 1
+        self.zap_counts += observations["WORLD.WHO_ZAPPED_WHO"].sum()
+        print("zap counts: ", self.zap_counts)
+
         assert (
             self.is_vector_env == True
         ), "this wrapper currently only works with vector env"
@@ -79,13 +81,18 @@ class RecordMultiagentEpisodeStatistics(gym.Wrapper):
                 )
                 self.episode_equality = 1 - self._gini_coefficient(self.episode_returns)
 
-                self.episode_sustainability = self.sustainability_t_i / len(dones)
+                self.episode_sustainability = self.sustainability_t_i / self.num_agents
+
+                self.episode_peace = (
+                    self.num_agents * self.episode_lengths - self.zap_counts
+                ) / self.episode_lengths
 
                 episode_info = {
                     "l": self.episode_lengths.max(),
                     "u": self.episode_efficiency,
                     "e": self.episode_equality,
                     "s": self.episode_sustainability,
+                    "p": self.episode_peace,
                     "t": round(time.perf_counter() - self.t0, 6),
                 }
                 infos[i]["ma_episode"] = episode_info
