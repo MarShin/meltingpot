@@ -16,7 +16,7 @@ class RecordMultiagentEpisodeStatistics(gym.Wrapper):
     Peace (P) - average number of untagged agent steps
     """
 
-    def __init__(self, env, num_steps, deque_size=100):
+    def __init__(self, env, num_steps, world_obs, deque_size=100):
         super().__init__(env)
         self.num_envs = getattr(env, "num_envs", 1)
         self.t0 = time.perf_counter()
@@ -35,6 +35,7 @@ class RecordMultiagentEpisodeStatistics(gym.Wrapper):
         self.peace_queue = deque(maxlen=deque_size)
         self.is_vector_env = getattr(env, "is_vector_env", False)
         self.num_steps = num_steps
+        self.world_obs = world_obs
 
     def reset(self, **kwargs):
         observations = super().reset(**kwargs)

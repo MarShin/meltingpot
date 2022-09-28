@@ -19,7 +19,7 @@ def gini(x):
 
 
 # incomes = np.array([50, 50, 70, 70, 70, 90, 150, 150, 150, 150])
-incomes = np.array([10, 10, 70, 70, 70, 70, 70, 1000000])
+incomes = np.array([10, 10, -70, 70, -70, 70, 70, 150])
 
 # calculate Gini coefficient for array of incomes
 print(gini(incomes))

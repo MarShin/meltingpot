@@ -50,7 +50,7 @@ def parse_args():
         help="the learning rate of the optimizer")
     parser.add_argument("--num-envs", type=int, default=16,
         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=4, # TODO: change back to 512 standard, 1000 rollout_len in sb3_train
+    parser.add_argument("--num-steps", type=int, default=512, # TODO: change back to 512 standard, 1000 rollout_len in sb3_train
         help="the number of steps to run in each environment per policy rollout")
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
         help="Toggle learning rate annealing for policy and value networks")
@@ -99,7 +99,7 @@ class Agent(nn.Module):
         self.network = nn.Sequential(
             # if intput is Linear layer: np.array(envs.single_observation_space_shape).prod()
             # 19 = 1 frames * 3 RGB channels + 16 agent indicator
-            layer_init(nn.Conv2d(19, 32, 8, stride=4)),
+            layer_init(nn.Conv2d(6, 32, 8, stride=4)),
             nn.ReLU(),
             layer_init(nn.Conv2d(32, 64, 4, stride=2)),
             nn.ReLU(),
@@ -122,10 +122,11 @@ class Agent(nn.Module):
 
     def get_states(self, x, lstm_state, done):
         # x here is obs: (16, 88, 88, 19)
+        # TODO: only use the t frame for policy network; t-1 frame for sanction classifier
         x = x.clone()
         # Convert to tensor, rescale to [0, 1], and convert from
         # 3 rgb channels * 1 stack frames, rest are agent_indicator
-        x[:, :, :, [0, 1, 2, 3]] /= 255.0
+        x[:, :, :, :] /= 255.0
         # B x H x W x C to B x C x H x W
         hidden = self.network(x.permute((0, 3, 1, 2)))
 
@@ -202,40 +203,35 @@ if __name__ == "__main__":
         max_cycles=args.num_steps,
         env_config=env_config,
     )
+    num_agents = env.max_num_agents
+    world_obs = torch.zeros((num_agents, num_agents)).to(device)
 
-    def observation_fn(obs, obs_space):
-        # print("## observation_fn## ")
-        # print(obs)
-        # print()
+    def observation_fn(obs):
         # TODO: sanction-observation function - ways to aggregate the WORLD obs
-        # B = J * C * Z WHERE J is  sanction opportunity, C is context aka last obs, Z is action 'WHO_ZAPPED_WHO'
-
-        # return gym.Space.Dict(
-        #     (obs["RGB"], np.expand_dims(obs["WORLD.WHO_ZAPPED_WHO"], 0))
-        # )
-        spaces = {
+        # B = J * C * Z WHERE J is  sanction opportunity - `AVATAR_IDS_IN_RANGE_TO_ZAP`, C is context a.k.a last obs, Z is disapproval event 'WHO_ZAPPED_WHO'
+        global world_obs
+        observations = {
             "RGB": obs["RGB"],
             "WORLD.WHO_ZAPPED_WHO": obs["WORLD.WHO_ZAPPED_WHO"],
         }
-        return gym.spaces.Dict(spaces)
+        world_obs = obs["WORLD.WHO_ZAPPED_WHO"]
+        print("world_obs sum", world_obs.sum())
+        return observations
 
     def observation_space_fn(obs_space):
-        # print("observation_space_fn")
-        # print(obs_space)
-        # return obs_space["RGB"]
-
         spaces = {
             "RGB": obs_space["RGB"],
             "WORLD.WHO_ZAPPED_WHO": obs_space["WORLD.WHO_ZAPPED_WHO"],
         }
         return gym.spaces.Dict(spaces)
 
-    num_agents = env.max_num_agents
-    # env = ss.observation_lambda_v0(env, lambda x, _: x["RGB"], lambda s: s["RGB"])
     env = ss.observation_lambda_v0(
-        env, lambda a, b: observation_fn(a, b), lambda a: observation_space_fn(a)
+        env,
+        lambda a, _: observation_fn(a),
+        lambda s: observation_space_fn(s),
     )
-    # env = ss.frame_stack_v1(env, 1)  # stack 1 frame instead of 4 as we're using LSTM
+    env = ss.observation_lambda_v0(env, lambda x, _: x["RGB"], lambda s: s["RGB"])
+    env = ss.frame_stack_v1(env, 2)  # stack 1 frame instead of 4 as we're using LSTM
     # env = ss.agent_indicator_v0(env, type_only=False)
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     envs = ss.concat_vec_envs_v1(
@@ -246,19 +242,22 @@ if __name__ == "__main__":
         base_class="gym",
     )
     envs.single_observation_space = envs.observation_space
+
     # shape immutable - need to provide in another way
     if isinstance(envs.observation_space, (gym.spaces.Dict)):
         shape = ()
         for k, v in envs.observation_space.items():
             shape += v.shape
         envs.single_observation_space_shape = shape
+    else:
+        envs.single_observation_space_shape = envs.single_observation_space.shape
 
     envs.single_action_space = envs.action_space
     envs.is_vector_env = True
     envs = gym.wrappers.RecordEpisodeStatistics(envs)
 
-    # TODO: have MA stats triggered like Record Video
-    envs = RecordMultiagentEpisodeStatistics(envs, args.num_steps)
+    # TODO: have MA stats triggered like Record Video - only at a schedule
+    envs = RecordMultiagentEpisodeStatistics(envs, args.num_steps, world_obs)
 
     if args.capture_video:
         envs = gym.wrappers.RecordVideo(envs, f"videos/{run_name}")
@@ -305,9 +304,6 @@ if __name__ == "__main__":
         f"num_updates = total_timesteps / batch_size: {args.total_timesteps} / {args.batch_size} = {num_updates}"
     )
     print("next_obs shape:", next_obs.shape)
-    # print()
-    # print("agent.get_action_and_value(next_obs)", agent.get_action_and_value(next_obs))
-    # action (16, 1); log_prob (16, 1); entropy (16, 1); value (16, 1)
 
     for update in range(1, num_updates + 1):
         initial_lstm_state = (next_lstm_state[0].clone(), next_lstm_state[1].clone())
@@ -333,7 +329,33 @@ if __name__ == "__main__":
             logprobs[step] = logprob
 
             # TRY NOT TO MODIFY: execute the game and log data
-            next_obs, reward, done, info = envs.step(action.cpu().numpy())
+            # next_obs, reward, done, info = envs.step(action.cpu().numpy())
+            # FOR DEBUG ONLY: action 7 for fireZap
+            fireZap = np.array(
+                [
+                    7,
+                    7,
+                    7,
+                    7,
+                    7,
+                    7,
+                    7,
+                    7,
+                    7,
+                    7,
+                    7,
+                    7,
+                    7,
+                    7,
+                    7,
+                    7,
+                ]
+            )
+            next_obs, reward, done, info = envs.step(fireZap)
+
+            print("### WORLD OBS ### ")
+            print("sum of zaps: ", world_obs.sum())
+
             rewards[step] = torch.tensor(reward).to(device).view(-1)  # (16, )
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(
                 done
