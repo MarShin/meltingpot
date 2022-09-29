@@ -204,26 +204,22 @@ if __name__ == "__main__":
         env_config=env_config,
     )
     num_agents = env.max_num_agents
-    who_zap_who = None
 
     def observation_fn(obs):
         # TODO: sanction-observation function - ways to aggregate the WORLD obs
         # B = J * C * Z WHERE J is  sanction opportunity - `AVATAR_IDS_IN_RANGE_TO_ZAP`, C is context a.k.a last obs, Z is disapproval event 'WHO_ZAPPED_WHO'
-        global who_zap_who
-        observations = {
-            "RGB": obs["RGB"],
-            "WORLD.WHO_ZAPPED_WHO": obs["WORLD.WHO_ZAPPED_WHO"],
-        }
 
-        who_zap_who = obs["WORLD.WHO_ZAPPED_WHO"]
-        return observations
+        who_zap_who = obs["WORLD.WHO_ZAPPED_WHO"].resize(88,88)
+        return np.append(obs['RGB'], who_zap_who)
 
     def observation_space_fn(obs_space):
-        spaces = {
-            "RGB": obs_space["RGB"],
-            "WORLD.WHO_ZAPPED_WHO": obs_space["WORLD.WHO_ZAPPED_WHO"],
-        }
-        return gym.spaces.Dict(spaces)
+        # spaces = {
+        #     "RGB": obs_space["RGB"],
+        #     "WORLD.WHO_ZAPPED_WHO": obs_space["WORLD.WHO_ZAPPED_WHO"],
+        # }
+        # return gym.spaces.Dict(spaces)
+
+        return (88,88,4)
 
     env = ss.observation_lambda_v0(
         env,
@@ -270,7 +266,7 @@ if __name__ == "__main__":
     print(agent)
 
     # ALGO logic: Storage setup
-    # (512, 16, 88, 88, 19)
+    # (512, 16, 88, 88, 6)
     obs = torch.zeros(
         (args.num_steps, args.num_envs) + envs.single_observation_space_shape
     ).to(device)
@@ -328,7 +324,8 @@ if __name__ == "__main__":
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
-            world_zaps[step] = who_zap_who
+
+            # world_zaps[step] = who_zap_who
 
             # TRY NOT TO MODIFY: execute the game and log data
             # next_obs, reward, done, info = envs.step(action.cpu().numpy())
