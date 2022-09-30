@@ -205,12 +205,20 @@ if __name__ == "__main__":
     )
     num_agents = env.max_num_agents
 
-    def observation_fn(obs):
+    def combine_world_obs_fn(obs):
         # TODO: sanction-observation function - ways to aggregate the WORLD obs
         # B = J * C * Z WHERE J is  sanction opportunity - `AVATAR_IDS_IN_RANGE_TO_ZAP`, C is context a.k.a last obs, Z is disapproval event 'WHO_ZAPPED_WHO'
 
-        who_zap_who = obs["WORLD.WHO_ZAPPED_WHO"].resize(88,88)
-        return np.append(obs['RGB'], who_zap_who)
+        rgb = obs["RGB"]
+        who_zap_who = obs["WORLD.WHO_ZAPPED_WHO"]
+        zeros_to_pad = rgb.shape[0] - who_zap_who.shape[0]
+        np.pad(
+            zeros_to_pad,
+            ((0, zeros_to_pad), (0, zeros_to_pad)),
+            "constant",
+            constant_values=(2),
+        )
+        return np.concatenate((rgb.T, who_zap_who), axis=0)
 
     def observation_space_fn(obs_space):
         # spaces = {
@@ -219,11 +227,11 @@ if __name__ == "__main__":
         # }
         # return gym.spaces.Dict(spaces)
 
-        return (88,88,4)
+        return (*obs_space["RGB"][:2], obs_space["RGB"][-1] + 1)
 
     env = ss.observation_lambda_v0(
         env,
-        lambda a, _: observation_fn(a),
+        lambda a, _: combine_world_obs_fn(a),
         lambda s: observation_space_fn(s),
     )
     env = ss.observation_lambda_v0(env, lambda x, _: x["RGB"], lambda s: s["RGB"])
