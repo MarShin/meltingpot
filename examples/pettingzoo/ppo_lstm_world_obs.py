@@ -121,9 +121,12 @@ class Agent(nn.Module):
         self.critic = layer_init(nn.Linear(128, 1), std=1)
 
     def get_states(self, x, lstm_state, done):
-        # x here is obs: (16, 88, 88, 19)
+        # x here is obs: (16, 88, 88, 6) 2RGB frames stacked
         # TODO: only use the t frame for policy network; t-1 frame for sanction classifier
         x = x.clone()
+
+        # For now just get the RGB obs not using the world obs for the model
+        x = x[:, :, :, [0, 1, 2, 4, 5, 6]]
         # Convert to tensor, rescale to [0, 1], and convert from
         # 3 rgb channels * 1 stack frames, rest are agent_indicator
         x[:, :, :, :] /= 255.0
@@ -212,36 +215,33 @@ if __name__ == "__main__":
         rgb = obs["RGB"]
         who_zap_who = obs["WORLD.WHO_ZAPPED_WHO"]
         zeros_to_pad = rgb.shape[0] - who_zap_who.shape[0]
-        np.pad(
-            zeros_to_pad,
+        padded_who_zap_who = np.pad(
+            who_zap_who,
             ((0, zeros_to_pad), (0, zeros_to_pad)),
             "constant",
             constant_values=(2),
-        )
-        return np.concatenate((rgb.T, who_zap_who), axis=0)
+        ).reshape((1, rgb.shape[0], rgb.shape[0]))
+        return np.concatenate((rgb.T, padded_who_zap_who), axis=0).T
 
-    def observation_space_fn(obs_space):
-        # spaces = {
-        #     "RGB": obs_space["RGB"],
-        #     "WORLD.WHO_ZAPPED_WHO": obs_space["WORLD.WHO_ZAPPED_WHO"],
-        # }
-        # return gym.spaces.Dict(spaces)
+    def combine_world_obs_space_fn(obs_space):
+        # gym.spaces.Dict did not work
+        rgb_shape = obs_space["RGB"].shape
 
-        return (*obs_space["RGB"][:2], obs_space["RGB"][-1] + 1)
+        return gym.spaces.Box(0, 255, (*rgb_shape[:2], rgb_shape[-1] + 1), np.uint8)
 
     env = ss.observation_lambda_v0(
         env,
         lambda a, _: combine_world_obs_fn(a),
-        lambda s: observation_space_fn(s),
+        lambda s: combine_world_obs_space_fn(s),
     )
-    env = ss.observation_lambda_v0(env, lambda x, _: x["RGB"], lambda s: s["RGB"])
+    # env = ss.observation_lambda_v0(env, lambda x, _: x["RGB"], lambda s: s["RGB"])
     env = ss.frame_stack_v1(env, 2)  # stack 1 frame instead of 4 as we're using LSTM
     # env = ss.agent_indicator_v0(env, type_only=False)
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     envs = ss.concat_vec_envs_v1(
         env,
-        # num_vec_envs=args.num_envs,  # number of parallel multi-agent environments
-        num_vec_envs=args.num_envs // num_agents,
+        num_vec_envs=args.num_envs
+        // num_agents,  # number of parallel multi-agent environments
         num_cpus=0,
         base_class="gym",
     )

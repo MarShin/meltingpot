@@ -61,6 +61,8 @@ class RecordMultiagentEpisodeStatistics(gym.Wrapper):
         self.episode_returns += rewards
         self.sustainability_t_i += (rewards > 0.0).sum()
         self.episode_lengths += 1
+
+        # TODO extraCT who zapped who here
         self.zap_counts += observations["WORLD.WHO_ZAPPED_WHO"].sum()
         print("zap counts: ", self.zap_counts)
 
