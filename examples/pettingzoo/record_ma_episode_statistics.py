@@ -73,7 +73,6 @@ class RecordMultiagentEpisodeStatistics(gym.Wrapper):
 
         # if all agent have finished the episode then report the metrics
         if dones.all():
-            print('episode length: ', self.episode_lengths)
             for i in range(len(dones)):
                 infos[i] = infos[i].copy()
 
