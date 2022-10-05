@@ -42,7 +42,7 @@ def parse_args():
         help="weather to capture videos of the agent performances (check out `videos` folder)")
 
     # Algorithm specific arguments
-    parser.add_argument("--env-id", type=str, default="allelopathic_harvest", # commons_harvest_open, allelopathic_harvest
+    parser.add_argument("--env-id", type=str, default="allelopathic_harvest", # commons_harvest_open, allelopathic_harvest, clean_up
         help="the id of the environment")
     parser.add_argument("--total-timesteps", type=int, default=10000000, # probably 2MM at least
         help="total timesteps of the experiments")
@@ -50,7 +50,7 @@ def parse_args():
         help="the learning rate of the optimizer")
     parser.add_argument("--num-envs", type=int, default=16,
         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=512, # TODO: change back to 512 standard, 1000 rollout_len in sb3_train
+    parser.add_argument("--num-steps", type=int, default=512,
         help="the number of steps to run in each environment per policy rollout")
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
         help="Toggle learning rate annealing for policy and value networks")
@@ -96,6 +96,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
+
         self.network = nn.Sequential(
             # if intput is Linear layer: np.array(envs.single_observation_space_shape).prod()
             # 19 = 1 frames * 3 RGB channels + 16 agent indicator
@@ -110,6 +111,20 @@ class Agent(nn.Module):
             nn.ReLU(),
         )
 
+        self.classifier = nn.Sequential(
+            layer_init(nn.Conv2d(6, 16, 8, stride=8)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(16, 32, 4, stride=1)),
+            nn.ReLU(),
+            nn.Flatten(),
+            layer_init(nn.Linear(64 * 7 * 7, 64)),
+            nn.ReLU(),
+            layer_init(nn.Linear(64, 2)),
+            nn.ReLU(),
+            layer_init(nn.Linear(2, 2)),
+            nn.Softmax(dim=1),  # not zap or zap
+        )
+
         self.lstm = nn.LSTM(512, 128)
         for name, param in self.lstm.named_parameters():
             if "bias" in name:
@@ -120,12 +135,17 @@ class Agent(nn.Module):
         self.actor = layer_init(nn.Linear(128, envs.single_action_space.n), std=0.01)
         self.critic = layer_init(nn.Linear(128, 1), std=1)
 
+    def get_classification(self, x):
+        x = x.clone()
+        # only using T-1 RGB frame and disapproval event for classifier; remove padding
+        x = x[:,:,:, [0,1,2]] / 255.0
+        x[:,:,:, [7]][:16, :16] # this is the label - randomly subsample p=32 for zap event & p=1024 for no_zap event
+        return self.classifier(x)
+
     def get_states(self, x, lstm_state, done):
         # x here is obs: (16, 88, 88, 6) 2RGB frames stacked
-        # TODO: only use the t frame for policy network; t-1 frame for sanction classifier
+        # TODO: Only use the t frame for policy network - right now using both frames
         x = x.clone()
-
-        # For now just get the RGB obs not using the world obs for the model
         x = x[:, :, :, [0, 1, 2, 4, 5, 6]]
         # Convert to tensor, rescale to [0, 1], and convert from
         # 3 rgb channels * 1 stack frames, rest are agent_indicator

@@ -8,12 +8,13 @@ import gym
 
 class RecordMultiagentEpisodeStatistics(gym.Wrapper):
     """
-    Adapted from gym wrapper `RecordEpisodeStatistics`
-    4 metric according to 'A multi-agent reinforcement learning model of common-pool resource appropriation' paper
-    Unitarian (U) aka Efficiency - sum total of all rewards obtained by all agents
-    Equality (E) - using Gini coefficient
-    Sustainability (S) - average time at which the rewards are collected
-    Peace (P) - average number of untagged agent steps
+    Adapted from gym wrapper `RecordEpisodeStatistics`.
+
+    4 social outcome metrics according to 'A multi-agent reinforcement learning model of common-pool resource appropriation' paper.
+    1. Unitarian (U) aka Efficiency - sum total of all rewards obtained by all agents
+    1. Equality (E) - using Gini coefficient
+    1. Sustainability (S) - average time at which the rewards are collected
+    1. Peace (P) - average number of untagged agent steps
     """
 
     def __init__(self, env, deque_size=100):
