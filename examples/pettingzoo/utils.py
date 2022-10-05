@@ -24,6 +24,8 @@ from pettingzoo.utils import wrappers
 from examples import utils
 from meltingpot.python import substrate
 
+# from meltingpot.python.utils.scenarios.wrappers import all_observations_wrapper
+
 PLAYER_STR_FORMAT = "player_{index}"
 MAX_CYCLES = 1000
 
@@ -55,6 +57,14 @@ class _MeltingPotPettingZooEnv(pettingzoo_utils.ParallelEnv):
         self.env_config = config_dict.ConfigDict(env_config)
         self.max_cycles = max_cycles
         self._env = substrate.build(self.env_config)
+        
+        # type error in spec_to_space for immutabledict & inner elements
+        # self._env = all_observations_wrapper.Wrapper(
+        #     self._env,
+        #     observations_to_share=["RGB"],
+        #     share_actions=True,
+        #     share_rewards=False,
+        # )
 
         self._num_players = len(self._env.observation_spec())
         self.possible_agents = [
