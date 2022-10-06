@@ -20,6 +20,8 @@ from gym import spaces
 import numpy as np
 import tree
 
+# import immutabledict
+
 PLAYER_STR_FORMAT = "player_{index}"
 _WORLD_PREFIX = "WORLD."
 
@@ -78,5 +80,7 @@ def spec_to_space(spec: tree.Structure[dm_env.specs.Array]) -> spaces.Space:
         return spaces.Tuple([spec_to_space(s) for s in spec])
     elif isinstance(spec, dict):
         return spaces.Dict({key: spec_to_space(s) for key, s in spec.items()})
+    # elif isinstance(spec, immutabledict.immutabledict):
+    #     return spaces.Dict({key: spec_to_space(s) for key, s in spec.items()})
     else:
         raise ValueError("Unexpected spec of type {}: {}".format(type(spec), spec))
