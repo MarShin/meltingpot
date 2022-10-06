@@ -112,12 +112,12 @@ class Agent(nn.Module):
         )
 
         self.classifier = nn.Sequential(
-            layer_init(nn.Conv2d(6, 16, 8, stride=8)),
+            layer_init(nn.Conv2d(3, 16, 8, stride=8)),
             nn.ReLU(),
             layer_init(nn.Conv2d(16, 32, 4, stride=1)),
             nn.ReLU(),
             nn.Flatten(),
-            layer_init(nn.Linear(64 * 7 * 7, 64)),
+            layer_init(nn.Linear(64 * 32, 64)),
             nn.ReLU(),
             layer_init(nn.Linear(64, 2)),
             nn.ReLU(),
@@ -138,18 +138,18 @@ class Agent(nn.Module):
     def get_classification(self, x):
         x = x.clone()
         # only using T-1 RGB frame and disapproval event for classifier; remove padding
-        x = x[:,:,:, [0,1,2]] / 255.0
-        x[:,:,:, [7]][:16, :16] # this is the label - randomly subsample p=32 for zap event & p=1024 for no_zap event
-        return self.classifier(x)
+        x = x[:, :, :, [0, 1, 2]] / 255.0
 
-    def get_states(self, x, lstm_state, done):
+        return self.classifier(x.permute((0, 3, 1, 2)))
+
+    def get_states(self, x, lstm_state, done, sanction_prediction):
         # x here is obs: (16, 88, 88, 6) 2RGB frames stacked
-        # TODO: Only use the t frame for policy network - right now using both frames
+        # Only use the t frame for policy network; t-1 frame for classifier
         x = x.clone()
-        x = x[:, :, :, [0, 1, 2, 4, 5, 6]]
-        # Convert to tensor, rescale to [0, 1], and convert from
-        # 3 rgb channels * 1 stack frames, rest are agent_indicator
-        x[:, :, :, :] /= 255.0
+        x = x[:, :, :, [4, 5, 6]]
+        # Rescale RGB channels to [0, 1]
+        x /= 255.0
+        # TODO
         # B x H x W x C to B x C x H x W
         hidden = self.network(x.permute((0, 3, 1, 2)))
 
@@ -176,7 +176,8 @@ class Agent(nn.Module):
         return self.critic(hidden)
 
     def get_action_and_value(self, x, lstm_state, done, action=None):
-        hidden, lstm_state = self.get_states(x, lstm_state, done)
+        sanction_prediction = self.get_classification(x)
+        hidden, lstm_state = self.get_states(x, lstm_state, done, sanction_prediction)
         logits = self.actor(hidden)
         probs = Categorical(logits=logits)
         if action is None:
@@ -187,6 +188,7 @@ class Agent(nn.Module):
             probs.entropy(),
             self.critic(hidden),
             lstm_state,
+            sanction_prediction,
         )
 
 
@@ -229,19 +231,33 @@ if __name__ == "__main__":
     num_agents = env.max_num_agents
 
     def combine_world_obs_fn(obs):
-        # TODO: sanction-observation function - ways to aggregate the WORLD obs
-        # B = J * C * Z WHERE J is  sanction opportunity - `AVATAR_IDS_IN_RANGE_TO_ZAP`, C is context a.k.a last obs, Z is disapproval event 'WHO_ZAPPED_WHO'
+        # sanction-observation function - ways to aggregate the WORLD obs
+        # B = J * C * Z WHERE J is sanction opportunity
+        # C is context a.k.a last obs, Z is disapproval event 'WHO_ZAPPED_WHO'
 
         rgb = obs["RGB"]
-        who_zap_who = obs["WORLD.WHO_ZAPPED_WHO"]
+        who_zap_who = obs["WORLD.WHO_ZAPPED_WHO"]  # label
+        avatar_in_range_to_zap = obs[
+            "AVATAR_IDS_IN_RANGE_TO_ZAP"
+        ]  # J info below (16,) one-hot
+        avatar_in_view = obs["AVATAR_IDS_IN_VIEW"]  # (16,) one-hot
+        ready_to_shoot = obs["READY_TO_SHOOT"]  # binary float64
+
         zeros_to_pad = rgb.shape[0] - who_zap_who.shape[0]
-        padded_who_zap_who = np.pad(
+        padded_obs = np.pad(
             who_zap_who,
             ((0, zeros_to_pad), (0, zeros_to_pad)),
             "constant",
             constant_values=(2),
-        ).reshape((1, rgb.shape[0], rgb.shape[0]))
-        return np.concatenate((rgb.T, padded_who_zap_who), axis=0).T
+        )
+        padded_obs[
+            who_zap_who.shape[0], : avatar_in_range_to_zap.shape[0]
+        ] = avatar_in_range_to_zap
+        padded_obs[who_zap_who.shape[0] + 1, : avatar_in_view.shape[0]] = avatar_in_view
+        padded_obs[who_zap_who.shape[0] + 2, 0] = ready_to_shoot
+
+        padded_obs = padded_obs.reshape((1, rgb.shape[0], rgb.shape[0]))
+        return np.concatenate((rgb.T, padded_obs), axis=0).T
 
     def combine_world_obs_space_fn(obs_space):
         # gym.spaces.Dict did not work
@@ -253,9 +269,7 @@ if __name__ == "__main__":
         lambda a, _: combine_world_obs_fn(a),
         lambda s: combine_world_obs_space_fn(s),
     )
-    # env = ss.observation_lambda_v0(env, lambda x, _: x["RGB"], lambda s: s["RGB"])
     env = ss.frame_stack_v1(env, 2)  # stack 1 frame instead of 4 as we're using LSTM
-    # env = ss.agent_indicator_v0(env, type_only=False)
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     envs = ss.concat_vec_envs_v1(
         env,
@@ -295,7 +309,9 @@ if __name__ == "__main__":
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    world_zaps = torch.zeros((args.num_steps, num_agents, num_agents)).to(device)
+    sanction_events = torch.zeros(
+        (args.num_steps, args.num_envs) + envs.single_observation_space_shape
+    ).to(device)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -335,9 +351,14 @@ if __name__ == "__main__":
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
-                action, logprob, _, value, next_lstm_state = agent.get_action_and_value(
-                    next_obs, next_lstm_state, next_done
-                )
+                (
+                    action,
+                    logprob,
+                    _,
+                    value,
+                    next_lstm_state,
+                    sanction_prediction,
+                ) = agent.get_action_and_value(next_obs, next_lstm_state, next_done)
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
@@ -348,6 +369,14 @@ if __name__ == "__main__":
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(
                 done
             ).to(device)
+
+            # log data for sanction events at time T-1 (16, 88, 88, 1)
+            extra_obs = next_obs[:, :, :, [3]]
+            # obs_avatar_in_range_to_zap = extra_obs[]
+
+            # label: who_zapped_who at time T
+            target = next_obs[:, :, :, [7]][:16, :16]
+            # TODO: for learning randomly subsample p=32 for zap event & p=1024 for no_zap event
 
             # per agent info
             for idx, item in enumerate(info):

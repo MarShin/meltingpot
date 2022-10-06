@@ -42,15 +42,16 @@ def parse_args():
         help="weather to capture videos of the agent performances (check out `videos` folder)")
 
     # Algorithm specific arguments
-    parser.add_argument("--env-id", type=str, default="allelopathic_harvest", # commons_harvest_open, allelopathic_harvest
+    parser.add_argument("--env-id", type=str, default="clean_up", # commons_harvest_open, allelopathic_harvest, clean_up
         help="the id of the environment")
-    parser.add_argument("--total-timesteps", type=int, default=5000000, # probably 2MM at least
+    parser.add_argument("--total-timesteps", type=int, default=10000000, # probably 2MM at least
         help="total timesteps of the experiments")
     parser.add_argument("--learning-rate", type=float, default=2.5e-4,
         help="the learning rate of the optimizer")
-    parser.add_argument("--num-envs", type=int, default=16,
+    parser.add_argument("--num-envs", type=int, default=28,
         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=512, # TODO: change back to 512 standard, 1000 rollout_len in sb3_train
+        # 16 agents for harvest; 7 for clean_up
+    parser.add_argument("--num-steps", type=int, default=512,
         help="the number of steps to run in each environment per policy rollout")
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
         help="Toggle learning rate annealing for policy and value networks")
@@ -99,7 +100,7 @@ class Agent(nn.Module):
         self.network = nn.Sequential(
             # if intput is Linear layer: np.array(envs.single_observation_space_shape).prod()
             # 19 = 1 frames * 3 RGB channels + 16 agent indicator
-            layer_init(nn.Conv2d(19, 32, 8, stride=4)),
+            layer_init(nn.Conv2d(3, 32, 8, stride=4)),
             nn.ReLU(),
             layer_init(nn.Conv2d(32, 64, 4, stride=2)),
             nn.ReLU(),
@@ -121,11 +122,11 @@ class Agent(nn.Module):
         self.critic = layer_init(nn.Linear(128, 1), std=1)
 
     def get_states(self, x, lstm_state, done):
-        # x here is obs: (16, 88, 88, 19)
+        # x here is obs: (16, 88, 88, 3)
         x = x.clone()
         # Convert to tensor, rescale to [0, 1], and convert from
         # 3 rgb channels * 1 stack frames, rest are agent_indicator
-        x[:, :, :, [0, 1, 2, 3]] /= 255.0
+        x[:, :, :, [0, 1, 2]] /= 255.0
         # B x H x W x C to B x C x H x W
         hidden = self.network(x.permute((0, 3, 1, 2)))
 
@@ -206,7 +207,7 @@ if __name__ == "__main__":
     num_agents = env.max_num_agents
     env = ss.observation_lambda_v0(env, lambda x, _: x["RGB"], lambda s: s["RGB"])
     env = ss.frame_stack_v1(env, 1)  # stack 1 frame instead of 4 as we're using LSTM
-    env = ss.agent_indicator_v0(env, type_only=False)
+    # env = ss.agent_indicator_v0(env, type_only=False)
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     envs = ss.concat_vec_envs_v1(
         env,
