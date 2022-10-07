@@ -50,7 +50,7 @@ def parse_args():
         help="the learning rate of the optimizer")
     parser.add_argument("--num-envs", type=int, default=16,
         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=512,
+    parser.add_argument("--num-steps", type=int, default=64, # 512
         help="the number of steps to run in each environment per policy rollout")
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
         help="Toggle learning rate annealing for policy and value networks")
@@ -148,7 +148,6 @@ class Agent(nn.Module):
         x = x[:, :, :, [4, 5, 6]]
         # Rescale RGB channels to [0, 1]
         x /= 255.0
-        # TODO
         # B x H x W x C to B x C x H x W
         hidden = self.network(x.permute((0, 3, 1, 2)))
 
@@ -235,7 +234,7 @@ if __name__ == "__main__":
         # C is context a.k.a last obs, Z is disapproval event 'WHO_ZAPPED_WHO'
 
         rgb = obs["RGB"]
-        who_zap_who = obs["WORLD.WHO_ZAPPED_WHO"]  # label
+        who_zap_who = obs["WORLD.WHO_ZAPPED_WHO"]  # label (16, 16)
         avatar_in_range_to_zap = obs[
             "AVATAR_IDS_IN_RANGE_TO_ZAP"
         ]  # J info below (16,) one-hot
@@ -249,6 +248,7 @@ if __name__ == "__main__":
             "constant",
             constant_values=(2),
         )
+        # TODO: bug here 2. instead of 0 or 1
         padded_obs[
             who_zap_who.shape[0], : avatar_in_range_to_zap.shape[0]
         ] = avatar_in_range_to_zap
@@ -372,26 +372,34 @@ if __name__ == "__main__":
                 done
             ).to(device)
 
-            # log data for sanction events at time T-1
+            # log data for sanction events at time T-1 from (16, 88, 88, 8) stacked frame
             extra_obs = np.squeeze(next_obs[:, :, :, [3]])[:, :19, :16]  # (16, 19, 16)
             obs_avatar_in_range_to_zap = extra_obs[
                 :, -3, :
             ]  # (16, 16) - each agent's (16,) one hot
             obs_ready_to_shoot = extra_obs[:, -1, 0]  # (16, 1)
 
-            for agent_id in range(num_agents):
+            print("obs_avatar_in_range_to_zap: ")
+            print(obs_avatar_in_range_to_zap)
+            print("obs_ready_to_shoot: ")
+            print(obs_ready_to_shoot)
+            print()
 
+            for agent_id in range(num_agents):
                 if (
                     obs_ready_to_shoot[agent_id] == 1.0
                     and (obs_avatar_in_range_to_zap[agent_id] == 1.0).any()
                 ):
+                    print(f"logging sanction events for {agent_id}")
+                    print(f"target: {next_obs[agent_id, :, :, [7]][agent_id, :16]}")
+                    print()
                     # Context C at time T-1
                     # 512,16,88,88,6
                     sanction_events[step][agent_id] = next_obs[
                         agent_id, :, :, [0, 1, 2]
                     ]
                     # label: who_zapped_who at time T
-                    # 512,16,16,
+                    # 512,16,16
                     sanction_targets[step][agent_id] = next_obs[agent_id, :, :, [7]][
                         agent_id, :16
                     ]
@@ -524,7 +532,14 @@ if __name__ == "__main__":
                     :, mbenvinds
                 ].ravel()  # be really careful about the index
 
-                _, newlogprob, entropy, newvalue, _, sanction_prediction = agent.get_action_and_value(
+                (
+                    _,
+                    newlogprob,
+                    entropy,
+                    newvalue,
+                    _,
+                    sanction_prediction,
+                ) = agent.get_action_and_value(
                     b_obs[mb_inds],
                     (
                         initial_lstm_state[0][:, mbenvinds],
