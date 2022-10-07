@@ -99,8 +99,7 @@ class Agent(nn.Module):
 
         self.network = nn.Sequential(
             # if intput is Linear layer: np.array(envs.single_observation_space_shape).prod()
-            # 19 = 1 frames * 3 RGB channels + 16 agent indicator
-            layer_init(nn.Conv2d(6, 32, 8, stride=4)),
+            layer_init(nn.Conv2d(3, 32, 8, stride=4)),
             nn.ReLU(),
             layer_init(nn.Conv2d(32, 64, 4, stride=2)),
             nn.ReLU(),
@@ -135,17 +134,17 @@ class Agent(nn.Module):
         self.actor = layer_init(nn.Linear(128, envs.single_action_space.n), std=0.01)
         self.critic = layer_init(nn.Linear(128, 1), std=1)
 
-    def get_classification(self, x):
-        x = x.clone()
+    def get_classification(self, obs):
+        x = obs.clone()
         # only using T-1 RGB frame and disapproval event for classifier; remove padding
         x = x[:, :, :, [0, 1, 2]] / 255.0
 
         return self.classifier(x.permute((0, 3, 1, 2)))
 
-    def get_states(self, x, lstm_state, done, sanction_prediction):
+    def get_states(self, obs, lstm_state, done):
         # x here is obs: (16, 88, 88, 6) 2RGB frames stacked
         # Only use the t frame for policy network; t-1 frame for classifier
-        x = x.clone()
+        x = obs.clone()
         x = x[:, :, :, [4, 5, 6]]
         # Rescale RGB channels to [0, 1]
         x /= 255.0
@@ -177,7 +176,7 @@ class Agent(nn.Module):
 
     def get_action_and_value(self, x, lstm_state, done, action=None):
         sanction_prediction = self.get_classification(x)
-        hidden, lstm_state = self.get_states(x, lstm_state, done, sanction_prediction)
+        hidden, lstm_state = self.get_states(x, lstm_state, done)
         logits = self.actor(hidden)
         probs = Categorical(logits=logits)
         if action is None:
@@ -240,7 +239,7 @@ if __name__ == "__main__":
         avatar_in_range_to_zap = obs[
             "AVATAR_IDS_IN_RANGE_TO_ZAP"
         ]  # J info below (16,) one-hot
-        avatar_in_view = obs["AVATAR_IDS_IN_VIEW"]  # (16,) one-hot
+        avatar_in_view = obs["AVATAR_IDS_IN_VIEW"]  # (16,) one-hot; no need ATM
         ready_to_shoot = obs["READY_TO_SHOOT"]  # binary float64
 
         zeros_to_pad = rgb.shape[0] - who_zap_who.shape[0]
@@ -312,6 +311,9 @@ if __name__ == "__main__":
     sanction_events = torch.zeros(
         (args.num_steps, args.num_envs) + envs.single_observation_space_shape
     ).to(device)
+    sanction_targets = torch.zeros((args.num_steps, args.num_envs, args.num_envs)).to(
+        device
+    )
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -370,13 +372,31 @@ if __name__ == "__main__":
                 done
             ).to(device)
 
-            # log data for sanction events at time T-1 (16, 88, 88, 1)
-            extra_obs = next_obs[:, :, :, [3]]
-            # obs_avatar_in_range_to_zap = extra_obs[]
+            # log data for sanction events at time T-1
+            extra_obs = np.squeeze(next_obs[:, :, :, [3]])[:, :19, :16]  # (16, 19, 16)
+            obs_avatar_in_range_to_zap = extra_obs[
+                :, -3, :
+            ]  # (16, 16) - each agent's (16,) one hot
+            obs_ready_to_shoot = extra_obs[:, -1, 0]  # (16, 1)
 
-            # label: who_zapped_who at time T
-            target = next_obs[:, :, :, [7]][:16, :16]
-            # TODO: for learning randomly subsample p=32 for zap event & p=1024 for no_zap event
+            for agent_id in range(num_agents):
+
+                if (
+                    obs_ready_to_shoot[agent_id] == 1.0
+                    and (obs_avatar_in_range_to_zap[agent_id] == 1.0).any()
+                ):
+                    # Context C at time T-1
+                    # 512,16,88,88,6
+                    sanction_events[step][agent_id] = next_obs[
+                        agent_id, :, :, [0, 1, 2]
+                    ]
+                    # label: who_zapped_who at time T
+                    # 512,16,16,
+                    sanction_targets[step][agent_id] = next_obs[agent_id, :, :, [7]][
+                        agent_id, :16
+                    ]
+
+                    # TODO: [paper] for learning randomly subsample p=32 for zap event & p=1024 for no_zap event out of 1600 samples - sampling of 2 classes something to experiment with; for now just train with everything
 
             # per agent info
             for idx, item in enumerate(info):
@@ -504,7 +524,7 @@ if __name__ == "__main__":
                     :, mbenvinds
                 ].ravel()  # be really careful about the index
 
-                _, newlogprob, entropy, newvalue, _ = agent.get_action_and_value(
+                _, newlogprob, entropy, newvalue, _, sanction_prediction = agent.get_action_and_value(
                     b_obs[mb_inds],
                     (
                         initial_lstm_state[0][:, mbenvinds],
