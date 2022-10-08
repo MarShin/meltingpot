@@ -50,7 +50,7 @@ def parse_args():
         help="the learning rate of the optimizer")
     parser.add_argument("--num-envs", type=int, default=16,
         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=64, # 512
+    parser.add_argument("--num-steps", type=int, default=512,
         help="the number of steps to run in each environment per policy rollout")
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
         help="Toggle learning rate annealing for policy and value networks")
@@ -78,6 +78,16 @@ def parse_args():
         help="the maximum norm for the gradient clipping")
     parser.add_argument("--target-kl", type=float, default=None,
         help="the target KL divergence threshold")
+
+    # Classifier Norm Model (CNM) specific
+    parser.add_argument("--pseudo-alpha", type=float, default=0.2,
+        help="the pseudoreward term if classifier predicts the disapproval correctly")
+    parser.add_argument("--pseudo-beta", type=float, default=0.4,
+        help="the pseudoreward term if classifier predicts the disapproval correctly")
+    parser.add_argument("--cnm-freeze-step", type=float, default=1e8,
+        help="step to freeze after training the classifier")
+    parser.add_argument("--cnm-coef", type=float, default=0.01,
+        help="coefficient of the classifier CNM loss")
 
     args = parser.parse_args()
     args.batch_size = int(args.num_envs * args.num_steps) # 1 * 512; 
@@ -381,7 +391,7 @@ if __name__ == "__main__":
                 done
             ).to(device)
 
-            # log data for sanction events at time T-1 from (16, 88, 88, 8) stacked frame
+            # Log data for sanction events at time T-1 from (16, 88, 88, 8) stacked frame
             extra_obs = np.squeeze(next_obs[:, :, :, [3]])[:, :19, :16]  # (16, 19, 16)
             obs_avatar_in_range_to_zap = extra_obs[
                 :, -3, :
@@ -389,22 +399,31 @@ if __name__ == "__main__":
             obs_ready_to_shoot = extra_obs[:, -1, 0]  # (16, 1)
 
             for agent_id in range(num_agents):
-                if (
+                if (  # if sanction opportunity
                     obs_ready_to_shoot[agent_id] == 1.0
                     and (obs_avatar_in_range_to_zap[agent_id] == 1.0).any()
                 ):
-                    # Context C at time T-1
-                    # 512,16,88,88,3
+                    # Context C at time T-1 (512,16,88,88,3)
                     sanction_events[step][agent_id] = next_obs[
                         agent_id, :, :, [0, 1, 2]
                     ]
-                    # label: who_zapped_who at time T
-                    # 512,16,16
+                    # label: who_zapped_who at time T (512,16,16)
                     sanction_targets[step][agent_id] = np.squeeze(
                         next_obs[agent_id, :, :, [7]][agent_id, :16]
                     )
 
                     # TODO: [paper] for learning randomly subsample p=32 for zap event & p=1024 for no_zap event out of 1600 samples - sampling of 2 classes something to experiment with; for now just train with everything
+                    # TODO: check how many zap vs no_zap events in raw
+
+            # Pseudorewards of CNM
+            pseudoreward = args.pseudo_alpha * torch.matmul(
+                sanction_targets[step], sanction_prediction
+            ) - args.pseudo_beta * torch.matmul(
+                sanction_targets[step], (1.0 - sanction_prediction)
+            )
+            print("pseudoreward")
+            print(pseudoreward)
+            # pseudoreward.sum()
 
             # per agent info
             for idx, item in enumerate(info):
