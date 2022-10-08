@@ -248,15 +248,17 @@ if __name__ == "__main__":
             "constant",
             constant_values=(2),
         )
-        # TODO: bug here 2. instead of 0 or 1
         padded_obs[
             who_zap_who.shape[0], : avatar_in_range_to_zap.shape[0]
         ] = avatar_in_range_to_zap
-        padded_obs[who_zap_who.shape[0] + 1, : avatar_in_view.shape[0]] = avatar_in_view
-        padded_obs[who_zap_who.shape[0] + 2, 0] = ready_to_shoot
+        padded_obs[
+            (who_zap_who.shape[0] + 1), : avatar_in_view.shape[0]
+        ] = avatar_in_view
+        padded_obs[(who_zap_who.shape[0] + 2), 0] = ready_to_shoot
 
-        padded_obs = padded_obs.reshape((1, rgb.shape[0], rgb.shape[0]))
-        return np.concatenate((rgb.T, padded_obs), axis=0).T
+        padded_obs = padded_obs.T.reshape((1, rgb.shape[0], rgb.shape[1]))
+        combined_obs = np.concatenate((rgb.T, padded_obs), axis=0).T
+        return combined_obs
 
     def combine_world_obs_space_fn(obs_space):
         # gym.spaces.Dict did not work
@@ -309,7 +311,11 @@ if __name__ == "__main__":
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
     sanction_events = torch.zeros(
-        (args.num_steps, args.num_envs) + envs.single_observation_space_shape
+        (args.num_steps, args.num_envs)
+        + (  # only need the RGB of T-1 frame
+            *envs.single_observation_space_shape[:2],
+            envs.single_observation_space_shape[-1] // 2 - 1,
+        )
     ).to(device)
     sanction_targets = torch.zeros((args.num_steps, args.num_envs, args.num_envs)).to(
         device
@@ -379,30 +385,21 @@ if __name__ == "__main__":
             ]  # (16, 16) - each agent's (16,) one hot
             obs_ready_to_shoot = extra_obs[:, -1, 0]  # (16, 1)
 
-            print("obs_avatar_in_range_to_zap: ")
-            print(obs_avatar_in_range_to_zap)
-            print("obs_ready_to_shoot: ")
-            print(obs_ready_to_shoot)
-            print()
-
             for agent_id in range(num_agents):
                 if (
                     obs_ready_to_shoot[agent_id] == 1.0
                     and (obs_avatar_in_range_to_zap[agent_id] == 1.0).any()
                 ):
-                    print(f"logging sanction events for {agent_id}")
-                    print(f"target: {next_obs[agent_id, :, :, [7]][agent_id, :16]}")
-                    print()
                     # Context C at time T-1
-                    # 512,16,88,88,6
+                    # 512,16,88,88,3
                     sanction_events[step][agent_id] = next_obs[
                         agent_id, :, :, [0, 1, 2]
                     ]
                     # label: who_zapped_who at time T
                     # 512,16,16
-                    sanction_targets[step][agent_id] = next_obs[agent_id, :, :, [7]][
-                        agent_id, :16
-                    ]
+                    sanction_targets[step][agent_id] = np.squeeze(
+                        next_obs[agent_id, :, :, [7]][agent_id, :16]
+                    )
 
                     # TODO: [paper] for learning randomly subsample p=32 for zap event & p=1024 for no_zap event out of 1600 samples - sampling of 2 classes something to experiment with; for now just train with everything
 
