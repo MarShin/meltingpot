@@ -118,13 +118,14 @@ class Agent(nn.Module):
             nn.Flatten(),
             layer_init(nn.Linear(64 * 32, 64)),
             nn.ReLU(),
-            layer_init(nn.Linear(64, 2)),
+            layer_init(nn.Linear(64, 64)),
             nn.ReLU(),
-            layer_init(nn.Linear(2, 2)),
-            nn.Softmax(dim=1),  # not zap or zap
+            layer_init(nn.Linear(64, 2)),
+            nn.Softmax(dim=1),  # no_zap or zap
         )
 
-        self.lstm = nn.LSTM(512, 128)
+        # (512 + 2) sanction prediction
+        self.lstm = nn.LSTM(514, 128)
         for name, param in self.lstm.named_parameters():
             if "bias" in name:
                 nn.init.constant_(param, 0)
@@ -138,10 +139,9 @@ class Agent(nn.Module):
         x = obs.clone()
         # only using T-1 RGB frame and disapproval event for classifier; remove padding
         x = x[:, :, :, [0, 1, 2]] / 255.0
-
         return self.classifier(x.permute((0, 3, 1, 2)))
 
-    def get_states(self, obs, lstm_state, done):
+    def get_states(self, obs, lstm_state, done, sanction_prediction):
         # x here is obs: (16, 88, 88, 6) 2RGB frames stacked
         # Only use the t frame for policy network; t-1 frame for classifier
         x = obs.clone()
@@ -150,6 +150,9 @@ class Agent(nn.Module):
         x /= 255.0
         # B x H x W x C to B x C x H x W
         hidden = self.network(x.permute((0, 3, 1, 2)))
+
+        # CNM concat (16, 512) with(16, 2)
+        hidden = torch.cat((hidden, sanction_prediction), 1)
 
         # LSTM logic
         batch_size = lstm_state[0].shape[1]
@@ -169,13 +172,13 @@ class Agent(nn.Module):
         new_hidden = torch.flatten(torch.cat(new_hidden), 0, 1)
         return new_hidden, lstm_state
 
-    def get_value(self, x, lstm_state, done):
-        hidden, _ = self.get_states(x, lstm_state, done)
+    def get_value(self, x, lstm_state, done, sanction_prediction):
+        hidden, _ = self.get_states(x, lstm_state, done, sanction_prediction)
         return self.critic(hidden)
 
     def get_action_and_value(self, x, lstm_state, done, action=None):
         sanction_prediction = self.get_classification(x)
-        hidden, lstm_state = self.get_states(x, lstm_state, done)
+        hidden, lstm_state = self.get_states(x, lstm_state, done, sanction_prediction)
         logits = self.actor(hidden)
         probs = Categorical(logits=logits)
         if action is None:
@@ -468,9 +471,7 @@ if __name__ == "__main__":
         # bootstrap value if not done - REVISIT CODE
         with torch.no_grad():
             next_value = agent.get_value(
-                next_obs,
-                next_lstm_state,
-                next_done,
+                next_obs, next_lstm_state, next_done, sanction_prediction
             ).reshape(1, -1)
             if args.gae:
                 advantages = torch.zeros_like(rewards).to(device)
