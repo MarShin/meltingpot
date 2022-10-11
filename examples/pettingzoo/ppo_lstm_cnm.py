@@ -333,6 +333,7 @@ if __name__ == "__main__":
     sanction_targets = torch.zeros((args.num_steps, args.num_envs, args.num_envs)).to(
         device
     )
+    pseudorewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -398,8 +399,9 @@ if __name__ == "__main__":
             ]  # (16, 16) - each agent's (16,) one hot
             obs_ready_to_shoot = extra_obs[:, -1, 0]  # (16, 1)
 
+            # if sanction opportunity - save data
             for agent_id in range(num_agents):
-                if (  # if sanction opportunity
+                if (
                     obs_ready_to_shoot[agent_id] == 1.0
                     and (obs_avatar_in_range_to_zap[agent_id] == 1.0).any()
                 ):
@@ -412,20 +414,14 @@ if __name__ == "__main__":
                         next_obs[agent_id, :, :, [7]][agent_id, :16]
                     )
 
-                    # TODO: [paper] for learning randomly subsample p=32 for zap event & p=1024 for no_zap event out of 1600 samples - sampling of 2 classes something to experiment with; for now just train with everything
-                    # TODO: check how many zap vs no_zap events in raw
-
-            # Pseudorewards of CNM
-            pseudoreward = args.pseudo_alpha * torch.matmul(
-                sanction_targets[step], sanction_prediction
+            # Compute Pseudorewards of CNM (16, 16) * (16, 1)
+            pseudorewards[step] = args.pseudo_alpha * torch.matmul(
+                sanction_targets[step], sanction_prediction[:, 1]  # zap
             ) - args.pseudo_beta * torch.matmul(
-                sanction_targets[step], (1.0 - sanction_prediction)
+                sanction_targets[step], sanction_prediction[:, 0]  # no_zap
             )
-            print("pseudoreward")
-            print(pseudoreward)
-            # pseudoreward.sum()
 
-            # per agent info
+            # At the end of episode - per agent info
             for idx, item in enumerate(info):
                 player_idx = idx % num_agents
                 if "episode" in item.keys():
@@ -486,6 +482,11 @@ if __name__ == "__main__":
                     info[0]["ma_episode"]["p"],
                     global_step,
                 )
+
+                # TODO: [paper] for learning randomly subsample p=32 for zap event & p=1024 for no_zap event out of at most 1600 samples - sampling of 2 classes something to experiment with; for now just train with everything
+                # TODO: check how many zap vs no_zap events in raw
+
+                # sanction_targets.sum() / (only obs of sacntion event (rest of the tail are zeros))
 
         # bootstrap value if not done - REVISIT CODE
         with torch.no_grad():
