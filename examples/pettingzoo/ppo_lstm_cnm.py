@@ -323,17 +323,17 @@ if __name__ == "__main__":
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    sanction_events = torch.zeros(
-        (args.num_steps, args.num_envs)
-        + (  # only need the RGB of T-1 frame
-            *envs.single_observation_space_shape[:2],
-            envs.single_observation_space_shape[-1] // 2 - 1,
-        )
-    ).to(device)
-    sanction_targets = torch.zeros((args.num_steps, args.num_envs, args.num_envs)).to(
-        device
-    )
-    pseudorewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    # sanction_events = torch.zeros(
+    #     (args.num_steps, args.num_envs)
+    #     + (  # only need the RGB of T-1 frame
+    #         *envs.single_observation_space_shape[:2],
+    #         envs.single_observation_space_shape[-1] // 2 - 1,
+    #     )
+    # ).to(device)
+    # sanction_targets = torch.zeros((args.num_steps, args.num_envs, args.num_envs)).to(
+    #     device
+    # )
+
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -359,6 +359,10 @@ if __name__ == "__main__":
 
     for update in range(1, num_updates + 1):
         initial_lstm_state = (next_lstm_state[0].clone(), next_lstm_state[1].clone())
+
+        sanction_events = []
+        sanction_targets = []
+        pseudorewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
         # Annealing the rate if instructed to do so
         if args.anneal_lr:
@@ -405,20 +409,18 @@ if __name__ == "__main__":
                     obs_ready_to_shoot[agent_id] == 1.0
                     and (obs_avatar_in_range_to_zap[agent_id] == 1.0).any()
                 ):
-                    # Context C at time T-1 (512,16,88,88,3)
-                    sanction_events[step][agent_id] = next_obs[
-                        agent_id, :, :, [0, 1, 2]
-                    ]
-                    # label: who_zapped_who at time T (512,16,16)
-                    sanction_targets[step][agent_id] = np.squeeze(
-                        next_obs[agent_id, :, :, [7]][agent_id, :16]
+                    # Context C at time T-1
+                    sanction_events.append(next_obs[agent_id, :, :, [0, 1, 2]])
+                    # label: who_zapped_who at time T
+                    sanction_targets.append(
+                        np.squeeze(next_obs[agent_id, :, :, [7]][agent_id, :16])
                     )
 
             # Compute Pseudorewards of CNM (16, 16) * (16, 1)
             pseudorewards[step] = args.pseudo_alpha * torch.matmul(
-                sanction_targets[step], sanction_prediction[:, 1]  # zap
+                sanction_targets[-1], sanction_prediction[:, 1]  # zap
             ) - args.pseudo_beta * torch.matmul(
-                sanction_targets[step], sanction_prediction[:, 0]  # no_zap
+                sanction_targets[-1], sanction_prediction[:, 0]  # no_zap
             )
 
             # At the end of episode - per agent info
@@ -483,10 +485,12 @@ if __name__ == "__main__":
                     global_step,
                 )
 
-                # TODO: [paper] for learning randomly subsample p=32 for zap event & p=1024 for no_zap event out of at most 1600 samples - sampling of 2 classes something to experiment with; for now just train with everything
-                # TODO: check how many zap vs no_zap events in raw
-
-                # sanction_targets.sum() / (only obs of sacntion event (rest of the tail are zeros))
+        # TODO: [paper] for learning randomly subsample p=32 for zap event & p=1024 for no_zap event out of at most 1600 samples - sampling of 2 classes something to experiment with; for now just train with everything
+        sanction_targets = torch.cat(sanction_targets).reshape(-1, 16)
+        sanction_events = torch.cat(sanction_events).reshape(-1, *sanction_events[-1].shape) 
+        print(
+            f"Fraction of zaps / zap opportunities: {sanction_targets.sum()} / {sanction_targets.shape[0]}={sanction_targets.sum() / sanction_targets.shape[0]}"
+        )
 
         # bootstrap value if not done - REVISIT CODE
         with torch.no_grad():
