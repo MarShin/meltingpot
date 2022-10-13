@@ -152,7 +152,7 @@ class Agent(nn.Module):
         return self.classifier(x.permute((0, 3, 1, 2)))
 
     def get_states(self, obs, lstm_state, done, sanction_prediction):
-        # x here is obs: (16, 88, 88, 6) 2RGB frames stacked
+        # x here is obs: (2048, 88, 88, 8) 2 frames stacked
         # Only use the t frame for policy network; t-1 frame for classifier
         x = obs.clone()
         x = x[:, :, :, [4, 5, 6]]
@@ -333,7 +333,7 @@ if __name__ == "__main__":
     # sanction_targets = torch.zeros((args.num_steps, args.num_envs, args.num_envs)).to(
     #     device
     # )
-
+    pseudorewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -359,10 +359,8 @@ if __name__ == "__main__":
 
     for update in range(1, num_updates + 1):
         initial_lstm_state = (next_lstm_state[0].clone(), next_lstm_state[1].clone())
-
         sanction_events = []
         sanction_targets = []
-        pseudorewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
         # Annealing the rate if instructed to do so
         if args.anneal_lr:
@@ -411,17 +409,16 @@ if __name__ == "__main__":
                 ):
                     # Context C at time T-1
                     sanction_events.append(next_obs[agent_id, :, :, [0, 1, 2]])
-                    # label: who_zapped_who at time T
-                    sanction_targets.append(
-                        np.squeeze(next_obs[agent_id, :, :, [7]][agent_id, :16])
+                    # Label: binary agent zapped or not at time T
+                    obs_who_zap_who = np.squeeze(
+                        next_obs[agent_id, :, :, [7]][agent_id, :16]
                     )
+                    sanction_targets.append((obs_who_zap_who == 1.0).any().float())
 
-            # Compute Pseudorewards of CNM (16, 16) * (16, 1)
-            pseudorewards[step] = args.pseudo_alpha * torch.matmul(
-                sanction_targets[-1], sanction_prediction[:, 1]  # zap
-            ) - args.pseudo_beta * torch.matmul(
-                sanction_targets[-1], sanction_prediction[:, 0]  # no_zap
-            )
+            # Compute Pseudorewards of CNM (16, 1) * (16, 1)
+            pseudorewards[step] = (
+                args.pseudo_alpha * sanction_targets[-1] * sanction_prediction[:, 1]
+            ) - args.pseudo_beta * sanction_targets[-1] * sanction_prediction[:, 0]
 
             # At the end of episode - per agent info
             for idx, item in enumerate(info):
@@ -486,13 +483,18 @@ if __name__ == "__main__":
                 )
 
         # TODO: [paper] for learning randomly subsample p=32 for zap event & p=1024 for no_zap event out of at most 1600 samples - sampling of 2 classes something to experiment with; for now just train with everything
-        sanction_targets = torch.cat(sanction_targets).reshape(-1, 16)
-        sanction_events = torch.cat(sanction_events).reshape(-1, *sanction_events[-1].shape) 
+        sanction_targets = torch.stack(sanction_targets).view(-1, 1)
+        sanction_events = torch.cat(sanction_events).view(
+            -1, *sanction_events[-1].shape
+        )
         print(
             f"Fraction of zaps / zap opportunities: {sanction_targets.sum()} / {sanction_targets.shape[0]}={sanction_targets.sum() / sanction_targets.shape[0]}"
         )
 
-        # bootstrap value if not done - REVISIT CODE
+        # added to env rewards before going through GAE or discounting
+        rewards = rewards + pseudorewards
+
+        # bootstrap value if not done
         with torch.no_grad():
             next_value = agent.get_value(
                 next_obs, next_lstm_state, next_done, sanction_prediction
@@ -540,9 +542,11 @@ if __name__ == "__main__":
 
         # Optimizing the policy and value networks
         assert args.num_envs % args.num_minibatches == 0
-        envsperbatch = args.num_envs // args.num_minibatches
-        envinds = np.arange(args.num_envs)
-        flatinds = np.arange(args.batch_size).reshape(args.num_steps, args.num_envs)
+        envsperbatch = args.num_envs // args.num_minibatches  # 16/4
+        envinds = np.arange(args.num_envs)  # 1..16
+        flatinds = np.arange(args.batch_size).reshape(
+            args.num_steps, args.num_envs
+        )  # 8192 -> (512, 16)
 
         clipfracs = []
         for epoch in range(args.update_epochs):
@@ -560,7 +564,7 @@ if __name__ == "__main__":
                     entropy,
                     newvalue,
                     _,
-                    sanction_prediction,
+                    _sanction_prediction,
                 ) = agent.get_action_and_value(
                     b_obs[mb_inds],
                     (
@@ -587,6 +591,13 @@ if __name__ == "__main__":
                         mb_advantages.std() + 1e-8
                     )
 
+                # Classifier loss
+                bce_loss = nn.BCELoss()
+                cnm_loss = bce_loss(
+                    agent.get_classification(sanction_events)[:, 1].view(-1, 1),
+                    sanction_targets,
+                )  # classfier_zap (num_sanction_opportunities, 1) vs
+
                 # Policy loss
                 pg_loss1 = -mb_advantages * ratio
                 pg_loss2 = -mb_advantages * torch.clamp(
@@ -609,7 +620,12 @@ if __name__ == "__main__":
                 else:
                     v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
                 entropy_loss = entropy.mean()
-                loss = pg_loss - args.ent_coef * entropy_loss + args.vf_coef * v_loss
+                loss = (
+                    pg_loss
+                    - args.ent_coef * entropy_loss
+                    + args.vf_coef * v_loss
+                    + args.cnm_coef * cnm_loss
+                )
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -632,6 +648,7 @@ if __name__ == "__main__":
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
         writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
+        writer.add_scalar("losses/classifier_loss", cnm_loss.item(), global_step)
         writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
