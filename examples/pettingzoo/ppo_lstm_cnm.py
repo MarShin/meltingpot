@@ -323,16 +323,6 @@ if __name__ == "__main__":
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    # sanction_events = torch.zeros(
-    #     (args.num_steps, args.num_envs)
-    #     + (  # only need the RGB of T-1 frame
-    #         *envs.single_observation_space_shape[:2],
-    #         envs.single_observation_space_shape[-1] // 2 - 1,
-    #     )
-    # ).to(device)
-    # sanction_targets = torch.zeros((args.num_steps, args.num_envs, args.num_envs)).to(
-    #     device
-    # )
     pseudorewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
     # TRY NOT TO MODIFY: start the game
@@ -409,11 +399,17 @@ if __name__ == "__main__":
                 ):
                     # Context C at time T-1
                     sanction_events.append(next_obs[agent_id, :, :, [0, 1, 2]])
-                    # Label: binary agent zapped or not at time T
                     obs_who_zap_who = np.squeeze(
                         next_obs[agent_id, :, :, [7]][agent_id, :16]
                     )
-                    sanction_targets.append((obs_who_zap_who == 1.0).any().float())
+                    sanction_targets.append(obs_who_zap_who)
+
+            # If no sanction opportunities at all in the episode
+            if len(sanction_targets) == 0:
+                print("no sanction opportunities at all in episode")
+                sanction_targets.append(torch.zeros(16))
+                empty_obs = torch.zeros_like(next_obs[agent_id, :, :, [0, 1, 2]])
+                sanction_events.append(empty_obs)
 
             # Compute Pseudorewards of CNM (16, 1) * (16, 1)
             pseudorewards[step] = (
@@ -432,12 +428,6 @@ if __name__ == "__main__":
                         item["episode"]["r"],
                         global_step,
                     )
-                    # all players have same lengths
-                    # writer.add_scalar(
-                    #     f"charts/episodic_length-player{player_idx}",
-                    #     item["episode"]["l"],
-                    #     global_step,
-                    # )
 
             # episode-wide info - overhead, each tuple in list contains same info
             if "ma_episode" in info[0].keys():
@@ -483,12 +473,25 @@ if __name__ == "__main__":
                 )
 
         # TODO: [paper] for learning randomly subsample p=32 for zap event & p=1024 for no_zap event out of at most 1600 samples - sampling of 2 classes something to experiment with; for now just train with everything
-        sanction_targets = torch.stack(sanction_targets).view(-1, 1)
+        # Label: binary agent zapped or not at time T
+        sanction_targets_binary = (
+            torch.any((torch.stack(sanction_targets) == 1.0), 1).float().view(-1, 1)
+        )
         sanction_events = torch.cat(sanction_events).view(
             -1, *sanction_events[-1].shape
         )
         print(
-            f"Fraction of zaps / zap opportunities: {sanction_targets.sum()} / {sanction_targets.shape[0]}={sanction_targets.sum() / sanction_targets.shape[0]}"
+            f"Fraction of zaps / zap opportunities: {sanction_targets_binary.sum()} / {sanction_targets_binary.shape[0]}={sanction_targets_binary.sum() / sanction_targets_binary.shape[0]}"
+        )
+        writer.add_scalar(
+            f"charts/num_of_sanctions",
+            sanction_targets_binary.sum(),
+            global_step,
+        )
+        writer.add_scalar(
+            f"charts/num_of_sanctions_opportunities",
+            sanction_targets_binary.shape[0],
+            global_step,
         )
 
         # added to env rewards before going through GAE or discounting
@@ -595,7 +598,7 @@ if __name__ == "__main__":
                 bce_loss = nn.BCELoss()
                 cnm_loss = bce_loss(
                     agent.get_classification(sanction_events)[:, 1].view(-1, 1),
-                    sanction_targets,
+                    sanction_targets_binary,
                 )  # classfier_zap (num_sanction_opportunities, 1) vs
 
                 # Policy loss
